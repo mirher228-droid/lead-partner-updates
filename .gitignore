@@ -1,0 +1,14 @@
+# Generated/user-specific files must not be committed.
+**/config.json
+**/status.json
+**/staged.json
+**/journal.json
+**/*.log
+**/*.lock
+**/*.zip
+**/backup/
+**/stage/
+**/output/
+**/node_modules/
+**/__pycache__/
+**/.DS_Store
