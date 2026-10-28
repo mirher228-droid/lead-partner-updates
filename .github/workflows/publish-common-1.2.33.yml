@@ -53,7 +53,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the active release.' }
           $latest = $latestJson | ConvertFrom-Json
           if ($latest.tag_name -cne 'common-v1.2.32') { throw 'The active release changed. Refusing to replace an unexpected channel.' }
-          $null = gh api "repos/$env:GH_REPO/releases/tags/$tag" 2>$null
+          $null = gh release view $tag --repo $env:GH_REPO --json databaseId 2>$null
           if ($LASTEXITCODE -eq 0) { throw 'This release tag already exists. Refusing to overwrite published assets.' }
           if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4529e03eb629172b9ec639495b59bd280c6d582184e53beec58336ff3ff32a81') { throw 'Archive bytes changed after validation.' }
           $notes = @'
@@ -72,7 +72,9 @@ jobs:
             $download = Join-Path $verify ([IO.Path]::GetFileName($source))
             if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash) { throw 'Draft asset hash mismatch. Release was not activated.' }
           }
-          $draftJson = gh api "repos/$env:GH_REPO/releases/tags/$tag"
+          $draftId = gh release view $tag --repo $env:GH_REPO --json databaseId --jq '.databaseId'
+          if ($LASTEXITCODE -ne 0 -or $draftId -notmatch '^[1-9][0-9]*$') { throw 'Cannot identify the uploaded draft.' }
+          $draftJson = gh api "repos/$env:GH_REPO/releases/$draftId"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the verified draft.' }
           $draft = $draftJson | ConvertFrom-Json
           if ($draft.draft -ne $true -or $draft.prerelease -ne $false -or $draft.assets.Count -ne 3) { throw 'Unexpected draft metadata.' }
@@ -83,4 +85,3 @@ jobs:
           $publishedJson = gh api "repos/$env:GH_REPO/releases/latest"
           if ($LASTEXITCODE -ne 0 -or ($publishedJson | ConvertFrom-Json).tag_name -cne $tag) { throw 'Latest release was not confirmed.' }
           'Common 1.2.33 archive, setup and update.json verified and published.' >> $env:GITHUB_STEP_SUMMARY
-
