@@ -119,7 +119,7 @@ try {
     Assert-Rejected { Test-CommonReleaseMetadata -Release $release -ExpectedTag 'common-v1.2.30' -LatestTag 'common-v1.2.30' } 'asset|Common'
     $clientDirectory = Join-Path $testRoot 'client'
     [IO.Directory]::CreateDirectory($clientDirectory) | Out-Null
-    $setupFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt')
+    $setupFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1')
     foreach ($setupFile in $setupFiles) { [IO.File]::WriteAllText((Join-Path $clientDirectory $setupFile), ('fixture ' + $setupFile), [Text.UTF8Encoding]::new($false)) }
     $outputDirectory = Join-Path $testRoot 'output'
     $buildResult = & (Join-Path $repoRoot 'tools/Publish-Release.ps1') -ArchivePath $valid -Version '1.2.30' -OutputDirectory $outputDirectory -ClientDirectory $clientDirectory
@@ -134,7 +134,7 @@ try {
     Assert-True ($channel.archive.size -eq (Get-Item -LiteralPath $valid).Length) 'Channel size is wrong.'
     [DateTimeOffset]$channel.publishedAt | Out-Null
     $setupArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path $outputDirectory 'Lead-Partner-Common-AutoUpdate-Setup.zip'))
-    try { Assert-True ($setupArchive.Entries.Count -eq 7) 'Setup ZIP must contain exactly approved client files.'; foreach ($setupFile in $setupFiles) { Assert-True ($null -ne $setupArchive.GetEntry($setupFile)) ('Setup file missing: ' + $setupFile) } } finally { $setupArchive.Dispose() }
+    try { Assert-True ($setupArchive.Entries.Count -eq 9) 'Setup ZIP must contain exactly approved client files.'; foreach ($setupFile in $setupFiles) { Assert-True ($null -ne $setupArchive.GetEntry($setupFile)) ('Setup file missing: ' + $setupFile) } } finally { $setupArchive.Dispose() }
     $script:testCount++
     # This must run through -File: invoking with & inside this test has different parameter-default scope.
     $cliRoot = Join-Path $testRoot 'cli repository with spaces'
@@ -163,7 +163,7 @@ try {
     $cliChannel = Get-Content -LiteralPath (Join-Path $cliOutput 'update.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($cliChannel.archive.sha256 -ceq $channel.archive.sha256 -and $cliChannel.archive.size -eq $channel.archive.size) 'Subprocess CLI emitted incorrect archive integrity metadata.'
     $cliSetup = [IO.Compression.ZipFile]::OpenRead((Join-Path $cliOutput 'Lead-Partner-Common-AutoUpdate-Setup.zip'))
-    try { Assert-True ($cliSetup.Entries.Count -eq 7 -and $null -ne $cliSetup.GetEntry('Updater.Core.ps1')) 'Subprocess CLI did not find its sibling client directory.' } finally { $cliSetup.Dispose() }
+    try { Assert-True ($cliSetup.Entries.Count -eq 9 -and $null -ne $cliSetup.GetEntry('Updater.Core.ps1') -and $null -ne $cliSetup.GetEntry('SilentRunner.cs') -and $null -ne $cliSetup.GetEntry('Build-SilentRunner.ps1')) 'Subprocess CLI did not find its sibling client directory.' } finally { $cliSetup.Dispose() }
     $script:testCount++
     Remove-Item -LiteralPath (Join-Path $clientDirectory 'Updater.Core.ps1')
     Assert-Rejected { & (Join-Path $repoRoot 'tools/Publish-Release.ps1') -ArchivePath $valid -Version '1.2.30' -OutputDirectory (Join-Path $testRoot 'missing-client') -ClientDirectory $clientDirectory } 'missing|client'

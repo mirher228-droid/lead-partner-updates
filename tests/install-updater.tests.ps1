@@ -39,7 +39,7 @@ function global:Start-ScheduledTask { throw 'A test attempted to start a real ta
 try {
     Assert (Test-Path -LiteralPath (Join-Path $clientRoot 'Install-AutoUpdate.ps1')) 'installer must exist'
     [IO.Directory]::CreateDirectory($sourceRoot) | Out-Null
-    foreach ($name in @('Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt')) {
+    foreach ($name in @('Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1')) {
         Copy-Item -LiteralPath (Join-Path $clientRoot $name) -Destination (Join-Path $sourceRoot $name)
     }
     # These sentinels cannot update anything even if launched accidentally.
@@ -48,6 +48,11 @@ try {
     $installer = Join-Path $sourceRoot 'Install-AutoUpdate.ps1'
     $uninstaller = Join-Path $sourceRoot 'Uninstall-AutoUpdate.ps1'
     New-Common $extensionRoot
+
+    $initialSource=[IO.File]::ReadAllBytes((Join-Path $sourceRoot 'SilentRunner.cs'))
+    [IO.File]::WriteAllText((Join-Path $sourceRoot 'SilentRunner.cs'),'invalid first-install compiler fixture',$utf8)
+    try {Assert-Throws {& $installer -ExtensionPath $extensionRoot -NoRegisterTask -InstallRoot $installRoot} 'fresh compiler failure is reported'}finally{[IO.File]::WriteAllBytes((Join-Path $sourceRoot 'SilentRunner.cs'),$initialSource)}
+    Assert (-not (Test-Path -LiteralPath $installRoot)) 'fresh compiler failure leaves no managed root or lock that blocks retry'
 
     $result = & $installer -ExtensionPath $extensionRoot -NoRegisterTask -InstallRoot $installRoot
     Assert ($result.Status -eq 'installed-test') 'fixture installation completes without scheduling'
@@ -68,10 +73,13 @@ try {
     Assert ($xml.SelectSingleNode('//t:Principal/t:RunLevel',$ns).InnerText -ceq 'LeastPrivilege') 'task has limited privileges'
     Assert ($xml.SelectSingleNode('//t:TimeTrigger/t:Repetition/t:Interval',$ns).InnerText -ceq 'PT15M') 'task repeats every 15 minutes'
     Assert ($null -ne $xml.SelectSingleNode('//t:LogonTrigger/t:UserId',$ns)) 'task also starts on user logon'
-    Assert ($xml.SelectSingleNode('//t:Exec/t:Command',$ns).InnerText -like '*\WindowsPowerShell\v1.0\powershell.exe') 'task uses Windows PowerShell'
+    Assert ($xml.SelectSingleNode('//t:Exec/t:Command',$ns).InnerText -ceq (Join-Path $installRoot 'LeadPartner.Runner.exe')) 'task uses the exact owned GUI runner'
     $arguments = $xml.SelectSingleNode('//t:Exec/t:Arguments',$ns).InnerText
-    Assert ($arguments.Contains('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "')) 'task launches hidden without profiles'
-    Assert ($arguments.Contains('-ConfigPath "' + $configPath + '"')) 'task passes exact local config path'
+    Assert ($arguments -ceq '') 'silent runner accepts no task arguments'
+    Assert ($xml.SelectSingleNode('//t:Exec/t:WorkingDirectory',$ns).InnerText -ceq $installRoot) 'task working directory remains the owned root'
+    $runnerPath=Join-Path $installRoot 'LeadPartner.Runner.exe'
+    Assert ((Test-Path -LiteralPath $runnerPath -PathType Leaf) -and (Get-Item -LiteralPath $runnerPath).Length -gt 0) 'installer builds the owned runner locally'
+    foreach($name in @('SilentRunner.cs','Build-SilentRunner.ps1')){Assert ((Get-FileHash -LiteralPath (Join-Path $installRoot $name)).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $sourceRoot $name)).Hash) ('installed source bytes match setup: '+$name)}
     Assert ($xml.SelectSingleNode('//t:Settings/t:MultipleInstancesPolicy',$ns).InnerText -ceq 'IgnoreNew') 'task does not overlap its own launches'
     # Parse using the real Windows scheduler schema without registering a task.
     $scheduler = New-Object -ComObject 'Schedule.Service'
@@ -90,6 +98,21 @@ try {
     Assert ($config.extensionPath -ceq $extensionRoot) 'reinstall with no selection preserves existing folder'
     Assert ((Get-Content -LiteralPath (Join-Path $installRoot 'staged.zip') -Raw -Encoding UTF8).Trim() -ceq 'staged sentinel') 'reinstall preserves staged bytes'
     Assert ((Get-Content -LiteralPath (Join-Path $installRoot 'journal.json') -Raw -Encoding UTF8).Trim() -ceq 'journal sentinel') 'reinstall preserves recovery journal'
+
+    # A held GUI binary or a compiler failure must reject repair before any
+    # managed script/config/journal bytes are replaced. No process is started.
+    $savedRuntime=@{}
+    foreach($name in @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1','config.json','installation.json','staged.zip','journal.json')){$savedRuntime[$name]=(Get-FileHash -LiteralPath (Join-Path $installRoot $name)).Hash}
+    $sourceReadme=[IO.File]::ReadAllBytes((Join-Path $sourceRoot 'README-RU.txt'))
+    [IO.File]::WriteAllText((Join-Path $sourceRoot 'README-RU.txt'),'Changed repair sentinel',$utf8)
+    $heldRunner=[IO.File]::Open($runnerPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+    try {Assert-Throws {& $installer -NoRegisterTask -InstallRoot $installRoot} 'busy runner refuses repair before other managed writes'}finally{$heldRunner.Dispose()}
+    foreach($name in $savedRuntime.Keys){Assert ((Get-FileHash -LiteralPath (Join-Path $installRoot $name)).Hash -ceq $savedRuntime[$name]) ('busy runner preserves '+$name)}
+    [IO.File]::WriteAllBytes((Join-Path $sourceRoot 'README-RU.txt'),$sourceReadme)
+    $sourceCode=[IO.File]::ReadAllBytes((Join-Path $sourceRoot 'SilentRunner.cs'))
+    [IO.File]::WriteAllText((Join-Path $sourceRoot 'SilentRunner.cs'),'invalid C sharp fixture',$utf8)
+    try {Assert-Throws {& $installer -NoRegisterTask -InstallRoot $installRoot} 'compiler failure refuses repair before managed writes'}finally{[IO.File]::WriteAllBytes((Join-Path $sourceRoot 'SilentRunner.cs'),$sourceCode)}
+    foreach($name in $savedRuntime.Keys){Assert ((Get-FileHash -LiteralPath (Join-Path $installRoot $name)).Hash -ceq $savedRuntime[$name]) ('compiler failure preserves '+$name)}
 
     $otherCommon = Join-Path $testRoot 'Another Common'
     New-Common $otherCommon
@@ -169,11 +192,25 @@ try {
 
     [IO.File]::WriteAllText((Join-Path $installRoot 'keep-unknown.txt'), 'unknown sentinel', $utf8)
     [IO.File]::WriteAllText((Join-Path $installRoot 'journal.json'), 'journal sentinel', $utf8)
+    # Execute the real -File entry point as staff do. NoRegisterTask confines the
+    # child to this explicit fixture, including on scope/parameter regressions.
+    $cliInfo=New-Object Diagnostics.ProcessStartInfo
+    $cliInfo.FileName=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $cliInfo.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$installer+'" -NoRegisterTask -InstallRoot "'+$installRoot+'"'
+    $cliInfo.UseShellExecute=$false;$cliInfo.CreateNoWindow=$true;$cliInfo.RedirectStandardOutput=$true;$cliInfo.RedirectStandardError=$true
+    $cliInfo.EnvironmentVariables['PSModulePath']=Join-Path (Split-Path -Parent $cliInfo.FileName) 'Modules'
+    $cli= [Diagnostics.Process]::Start($cliInfo)
+    try {$cliOut=$cli.StandardOutput.ReadToEnd();$cliErr=$cli.StandardError.ReadToEnd();$cli.WaitForExit();Assert ($cli.ExitCode -eq 0) ('real installer CLI succeeds: '+$cliErr+$cliOut)}finally{$cli.Dispose()}
+    $cliConfig=Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+    Assert ($cliConfig.extensionPath -ceq $otherCommon) 'real CLI repair preserves the saved extension path'
+    Assert ((Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installRoot 'journal.json')).Trim() -ceq 'journal sentinel') 'real CLI repair preserves the recovery journal'
+    Assert ((Get-Item -LiteralPath $runnerPath).Length -gt 0) 'real CLI installed a nonempty owned runner'
     $result = & $uninstaller -NoUnregisterTask -InstallRoot $installRoot
     Assert ($result.Status -ceq 'uninstalled-test') 'uninstall succeeds only in fixture mode'
     Assert ($result.TaskName -ceq $expectedTaskName) 'uninstaller targets the same current account task name'
     Assert (-not (Test-Path -LiteralPath $configPath)) 'uninstall removes owned local config'
     Assert (-not (Test-Path -LiteralPath (Join-Path $installRoot 'Updater.Core.ps1'))) 'uninstall removes owned runtime'
+    foreach($name in @('LeadPartner.Runner.exe','SilentRunner.cs','Build-SilentRunner.ps1')){Assert (-not (Test-Path -LiteralPath (Join-Path $installRoot $name))) ('uninstall removes owned silent runtime: '+$name)}
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'backup\original.txt')) 'uninstall retains backup'
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'journal.json')) 'uninstall retains journal'
     Assert (Test-Path -LiteralPath (Join-Path $installRoot 'keep-unknown.txt')) 'uninstall retains unrelated files'

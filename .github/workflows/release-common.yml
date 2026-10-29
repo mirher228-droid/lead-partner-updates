@@ -30,7 +30,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($testScript in @('./tests/core-updater.tests.ps1', './tests/install-updater.tests.ps1', './tests/release-tests.ps1')) {
+          foreach ($testScript in @('./tests/core-updater.tests.ps1', './tests/install-updater.tests.ps1', './tests/release-tests.ps1', './tests/silent-runner.tests.ps1', './tests/task-owner-migration.tests.ps1')) {
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $testScript
             if ($LASTEXITCODE -ne 0) { throw "Offline test suite failed: $testScript" }
           }

@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($ClientDirectory)) { $ClientDirectory = Join-Pa
 . (Join-Path $PSScriptRoot 'Release.Common.ps1')
 if (-not $ReleaseTag) { $ReleaseTag = 'common-v' + $Version }
 $metadata = Test-CommonArchive -ArchivePath $ArchivePath -Version $Version -ReleaseTag $ReleaseTag -ExpectedSha256 $ExpectedSha256
-$setupFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt')
+$setupFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1')
 foreach ($setupFile in $setupFiles) {
     $clientPath = Join-Path $ClientDirectory $setupFile
     if (-not (Test-Path -LiteralPath $clientPath -PathType Leaf)) { throw ('Required client file is missing: ' + $setupFile) }

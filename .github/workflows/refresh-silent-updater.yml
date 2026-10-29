@@ -1,0 +1,138 @@
+name: Refresh silent Common updater setup
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/refresh-silent-updater.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows PowerShell 5.1 offline tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Test updater, installer and release validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($testScript in @('./tests/core-updater.tests.ps1', './tests/install-updater.tests.ps1', './tests/release-tests.ps1', './tests/silent-runner.tests.ps1', './tests/task-owner-migration.tests.ps1')) {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $testScript
+            if ($LASTEXITCODE -ne 0) { throw "Offline test suite failed: $testScript" }
+          }
+
+  publish:
+    name: Validate Common ZIP and publish channel assets
+    if: github.repository == 'mirher228-droid/lead-partner-updates'
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 15
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - name: Check out tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate published release metadata and download exact Common asset
+        id: release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $eventData = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw -Encoding UTF8 | ConvertFrom-Json
+          $tag = 'common-v1.2.36'
+          if ($tag -cnotmatch '^common-v(.+)$') { throw 'Expected a common-v<version> release tag.' }
+          Assert-ReleaseVersion $Matches[1]
+          $releaseJson = gh api "repos/$env:GH_REPO/releases/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Published release was not found.' }
+          $release = $releaseJson | ConvertFrom-Json
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Latest stable release was not found.' }
+          $latest = $latestJson | ConvertFrom-Json
+          $metadata = Test-CommonReleaseMetadata -Release $release -ExpectedTag $tag -LatestTag $latest.tag_name
+          $downloadDirectory = Join-Path $env:RUNNER_TEMP 'common-archive'
+          [IO.Directory]::CreateDirectory($downloadDirectory) | Out-Null
+          gh release download $tag --repo $env:GH_REPO --pattern $metadata.AssetName --dir $downloadDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Required Common ZIP asset could not be downloaded.' }
+          $archivePath = Join-Path $downloadDirectory $metadata.AssetName
+          if ((Get-Item -LiteralPath $archivePath).Length -ne $metadata.AssetSize) { throw 'Downloaded Common ZIP size differs from GitHub release metadata.' }
+          $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-metadata.json') -Encoding utf8NoBOM
+          $release | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-original.json') -Encoding utf8NoBOM
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($metadata.Version)" >> $env:GITHUB_OUTPUT
+      - name: Validate ZIP inventory and build channel and Windows setup ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-metadata.json') -Raw | ConvertFrom-Json
+          $archivePath = Join-Path (Join-Path $env:RUNNER_TEMP 'common-archive') $metadata.AssetName
+          ./tools/Publish-Release.ps1 -ArchivePath $archivePath -Version $metadata.Version -ReleaseTag $metadata.Tag -OutputDirectory ./dist -ExpectedSha256 adb32f9c131afc5e7f5a35b68aa908e6473016351d12608b19f1f2190cdb49b4
+      - name: Recheck release and upload setup before activating channel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $metadata = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-metadata.json') -Raw | ConvertFrom-Json
+          $original = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-original.json') -Raw | ConvertFrom-Json
+          $releaseJson = gh api "repos/$env:GH_REPO/releases/tags/$($metadata.Tag)"
+          if ($LASTEXITCODE -ne 0) { throw 'Release disappeared before upload.' }
+          $release = $releaseJson | ConvertFrom-Json
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Latest stable release check failed.' }
+          $latest = $latestJson | ConvertFrom-Json
+          Test-CommonReleaseMetadata -Release $release -ExpectedTag $metadata.Tag -LatestTag $latest.tag_name | Out-Null
+          $oldAsset = @($original.assets | Where-Object { $_.name -ceq $metadata.AssetName })[0]
+          $currentAsset = @($release.assets | Where-Object { $_.name -ceq $metadata.AssetName })[0]
+          if ($currentAsset.id -ne $oldAsset.id -or $currentAsset.size -ne $oldAsset.size -or $currentAsset.updated_at -ne $oldAsset.updated_at) { throw 'Common ZIP asset changed during validation; run again with an immutable release asset.' }
+          gh release upload $metadata.Tag ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip --repo $env:GH_REPO --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Setup ZIP upload failed; channel was not activated.' }
+          gh release upload $metadata.Tag ./dist/update.json --repo $env:GH_REPO --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Channel upload failed.' }
+      - name: Verify uploaded channel bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-metadata.json') -Raw | ConvertFrom-Json
+          $verifyDirectory = Join-Path $env:RUNNER_TEMP 'common-channel-verify'
+          [IO.Directory]::CreateDirectory($verifyDirectory) | Out-Null
+          gh release download $metadata.Tag --repo $env:GH_REPO --pattern update.json --dir $verifyDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Uploaded channel could not be downloaded.' }
+          $localHash = (Get-FileHash -LiteralPath ./dist/update.json -Algorithm SHA256).Hash
+          $publishedHash = (Get-FileHash -LiteralPath (Join-Path $verifyDirectory 'update.json') -Algorithm SHA256).Hash
+          if ($localHash -cne $publishedHash) { throw 'Uploaded channel bytes do not match validated output.' }
+          "Validated Common $($metadata.Version). Channel and setup assets are published." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Verify uploaded setup and unchanged Common ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $original = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'common-release-original.json') -Raw | ConvertFrom-Json
+          $verifyDirectory = Join-Path $env:RUNNER_TEMP 'silent-setup-verify'
+          [IO.Directory]::CreateDirectory($verifyDirectory) | Out-Null
+          gh release download common-v1.2.36 --repo $env:GH_REPO --pattern Lead-Partner-Common-AutoUpdate-Setup.zip --dir $verifyDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Uploaded setup could not be downloaded.' }
+          if ((Get-FileHash -LiteralPath ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip).Hash -cne (Get-FileHash -LiteralPath (Join-Path $verifyDirectory 'Lead-Partner-Common-AutoUpdate-Setup.zip')).Hash) { throw 'Uploaded setup differs from tested bytes.' }
+          $final = gh api "repos/$env:GH_REPO/releases/tags/common-v1.2.36" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Final release check failed.' }
+          $latest = gh api "repos/$env:GH_REPO/releases/latest" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Final latest check failed.' }
+          Test-CommonReleaseMetadata -Release $final -ExpectedTag common-v1.2.36 -LatestTag $latest.tag_name | Out-Null
+          $old = @($original.assets | Where-Object { $_.name -ceq 'Lead-Partner-Common-1.2.36.zip' })[0]
+          $current = @($final.assets | Where-Object { $_.name -ceq 'Lead-Partner-Common-1.2.36.zip' })[0]
+          if ($old.id -ne $current.id -or $old.size -ne $current.size -or $old.updated_at -ne $current.updated_at) { throw 'Common extension ZIP changed.' }
+          'Silent setup published; Common extension ZIP preserved.' >> $env:GITHUB_STEP_SUMMARY

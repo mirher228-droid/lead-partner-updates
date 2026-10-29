@@ -33,6 +33,28 @@ function Assert-NoReparseAncestors([string]$Path) {
         $cursor = $parent
     }
 }
+function Get-ValidatedExistingTask {
+    $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
+    if ($task) {
+        $principalId = [string]$task.Principal.UserId
+        $principalOwned = $principalId -ieq $ownerSid -or $principalId -ieq $owner.Name
+        if (-not $principalOwned) {
+            # Windows may expose the same principal as a short account name.
+            # Resolve its SID; matching display text alone is not ownership.
+            try { $principalOwned = ([Security.Principal.NTAccount]::new($principalId)).Translate([Security.Principal.SecurityIdentifier]).Value -ceq $ownerSid }
+            catch { $principalOwned = $false }
+        }
+        if (-not $principalOwned) { throw 'Задача с таким именем принадлежит другому пользователю.' }
+        $actions = @($task.Actions)
+        if ($actions.Count -ne 1) { throw 'Задача с таким именем не относится к этой установке.' }
+        $expectedPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $legacyArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $root 'Update-LeadPartner.ps1') + '" -ConfigPath "' + (Join-Path $root 'config.json') + '"'
+        $legacy = ([string]$actions[0].Execute) -ieq $expectedPowerShell -and ([string]$actions[0].Arguments) -ceq $legacyArguments
+        $silent = ([string]$actions[0].Execute) -ieq (Join-Path $root 'LeadPartner.Runner.exe') -and ([string]$actions[0].Arguments) -ceq '' -and ([string]$actions[0].WorkingDirectory) -ieq $root
+        if (-not $legacy -and -not $silent) { throw 'Задача с таким именем не относится к этой установке.' }
+    }
+    return $task
+}
 
 if ($InstallRoot) {
     if (-not $NoUnregisterTask) { throw 'InstallRoot разрешён только вместе с NoUnregisterTask для тестов.' }
@@ -52,7 +74,7 @@ Assert-NoReparseAncestors $markerPath
 if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -or (Get-Item -LiteralPath $markerPath -Force).Length -gt 65536) { throw 'Не найден корректный маркер установленного обновлятора. Файлы не удалены.' }
 $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($marker.schema -ne 1 -or $marker.repository -cne $repository -or $marker.channel -cne 'common' -or $marker.ownerSid -cne $ownerSid -or $marker.installRoot -cne $root) { throw 'Маркер не относится к этой личной установке. Файлы не удалены.' }
-$ownedFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','config.json')
+$ownedFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1','LeadPartner.Runner.exe','config.json')
 foreach ($name in $ownedFiles + @('update.lock')) {
     $path = Join-Path $root $name
     Assert-NoReparseAncestors $path
@@ -60,15 +82,7 @@ foreach ($name in $ownedFiles + @('update.lock')) {
 }
 if (-not $NoUnregisterTask) {
     Import-Module ScheduledTasks -ErrorAction Stop
-    $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
-    if ($task) {
-        $principalId = [string]$task.Principal.UserId
-        if ($principalId -ine $ownerSid -and $principalId -ine $owner.Name) { throw 'Задача с таким именем принадлежит другому пользователю.' }
-        $expected = '-File "' + (Join-Path $root 'Update-LeadPartner.ps1') + '" -ConfigPath "' + (Join-Path $root 'config.json') + '"'
-        $actions = @($task.Actions)
-        $expectedPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        if ($actions.Count -ne 1 -or ([string]$actions[0].Execute) -ine $expectedPowerShell -or -not ([string]$actions[0].Arguments).Contains($expected)) { throw 'Задача с таким именем не относится к этой установке.' }
-    }
+    $task = Get-ValidatedExistingTask
 }
 $lockStream = $null
 try {

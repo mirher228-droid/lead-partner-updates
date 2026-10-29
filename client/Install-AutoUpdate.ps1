@@ -21,7 +21,7 @@ $owner = [Security.Principal.WindowsIdentity]::GetCurrent()
 $ownerSid = $owner.User.Value
 $taskName = 'LeadPartner-Common-AutoUpdate-' + $ownerSid
 $utf8 = New-Object Text.UTF8Encoding($true)
-$managedFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt')
+$managedFiles = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1')
 
 function Get-AbsoluteLocalPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path -notmatch '^[A-Za-z]:[\\/]') { throw 'Требуется полный путь к папке на локальном диске.' }
@@ -180,12 +180,7 @@ function Write-AtomicFile([string]$Path, [byte[]]$Bytes) {
 }
 
 function New-TaskXml([string]$Root) {
-    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $entryPath = Join-Path $Root 'Update-LeadPartner.ps1'
-    $configPath = Join-Path $Root 'config.json'
-    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $entryPath + '" -ConfigPath "' + $configPath + '"'
-    $commandXml = [Security.SecurityElement]::Escape($powerShellPath)
-    $argumentsXml = [Security.SecurityElement]::Escape($arguments)
+    $commandXml = [Security.SecurityElement]::Escape((Join-Path $Root 'LeadPartner.Runner.exe'))
     $rootXml = [Security.SecurityElement]::Escape($Root)
     $startBoundary = (Get-Date).AddMinutes(1).ToString('s')
     return @"
@@ -201,22 +196,34 @@ function New-TaskXml([string]$Root) {
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>false</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT10M</ExecutionTimeLimit><Priority>7</Priority>
   </Settings>
-  <Actions Context="CurrentUser"><Exec><Command>$commandXml</Command><Arguments>$argumentsXml</Arguments><WorkingDirectory>$rootXml</WorkingDirectory></Exec></Actions>
+  <Actions Context="CurrentUser"><Exec><Command>$commandXml</Command><Arguments></Arguments><WorkingDirectory>$rootXml</WorkingDirectory></Exec></Actions>
 </Task>
 "@
 }
 
-function Assert-ExistingTaskOwner {
+function Get-ValidatedExistingTask {
     $existingTask = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($existingTask) {
         $principalId = [string]$existingTask.Principal.UserId
-        if ($principalId -ine $ownerSid -and $principalId -ine $owner.Name) { throw 'Задача обновления принадлежит другому пользователю. Установка остановлена.' }
+        $principalOwned = $principalId -ieq $ownerSid -or $principalId -ieq $owner.Name
+        if (-not $principalOwned) {
+            # Windows may expose the same principal as a short account name.
+            # Resolve its SID; matching display text alone is not ownership.
+            try { $principalOwned = ([Security.Principal.NTAccount]::new($principalId)).Translate([Security.Principal.SecurityIdentifier]).Value -ceq $ownerSid }
+            catch { $principalOwned = $false }
+        }
+        if (-not $principalOwned) { throw 'Задача обновления принадлежит другому пользователю. Установка остановлена.' }
         $actions = @($existingTask.Actions)
         $expectedEntry = Join-Path $root 'Update-LeadPartner.ps1'
         $expectedConfig = Join-Path $root 'config.json'
         $expectedPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        if ($actions.Count -ne 1 -or ([string]$actions[0].Execute) -ine $expectedPowerShell -or -not ([string]$actions[0].Arguments).Contains('-File "' + $expectedEntry + '" -ConfigPath "' + $expectedConfig + '"')) { throw 'Существующая задача с таким именем не относится к этой установке.' }
+        if ($actions.Count -ne 1) { throw 'Существующая задача с таким именем не относится к этой установке.' }
+        $legacyArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $expectedEntry + '" -ConfigPath "' + $expectedConfig + '"'
+        $legacy = ([string]$actions[0].Execute) -ieq $expectedPowerShell -and ([string]$actions[0].Arguments) -ceq $legacyArguments
+        $silent = ([string]$actions[0].Execute) -ieq (Join-Path $root 'LeadPartner.Runner.exe') -and ([string]$actions[0].Arguments) -ceq '' -and ([string]$actions[0].WorkingDirectory) -ieq $root
+        if (-not $legacy -and -not $silent) { throw 'Существующая задача с таким именем не относится к этой установке.' }
     }
+    return $existingTask
 }
 
 $root = Get-ValidatedRoot
@@ -241,13 +248,30 @@ foreach ($name in $managedFiles) {
     Assert-NoReparseAncestors (Join-Path $root $name)
 }
 Assert-NoReparseAncestors (Join-Path $root 'update.lock')
+Assert-NoReparseAncestors (Join-Path $root 'LeadPartner.Runner.exe')
 if (-not $NoRegisterTask) {
     Import-Module ScheduledTasks -ErrorAction Stop
-    Assert-ExistingTaskOwner
+    $null = Get-ValidatedExistingTask
 }
-[IO.Directory]::CreateDirectory($root) | Out-Null
 $lockStream = $null
+$compileRoot = $null
 try {
+    # Compile the exact source/builder bytes read during preflight. No assembly
+    # is loaded into this installer. Compile before creating the managed root:
+    # a first-install compiler failure must leave the next attempt retryable.
+    $compileTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $compileRoot = Join-Path $compileTemp ('LeadPartnerUpdater-Compile-' + [guid]::NewGuid().ToString('N'))
+    Assert-NoReparseAncestors $compileRoot
+    [IO.Directory]::CreateDirectory($compileRoot) | Out-Null
+    $compileSource = Join-Path $compileRoot 'SilentRunner.cs'
+    $compileBuilder = Join-Path $compileRoot 'Build-SilentRunner.ps1'
+    $compileOutput = Join-Path $compileRoot 'LeadPartner.Runner.exe'
+    [IO.File]::WriteAllBytes($compileSource,$payload['SilentRunner.cs'])
+    [IO.File]::WriteAllBytes($compileBuilder,$payload['Build-SilentRunner.ps1'])
+    . $compileBuilder
+    Build-LpSilentRunner -SourcePath $compileSource -OutputPath $compileOutput | Out-Null
+    $runnerBytes = [IO.File]::ReadAllBytes($compileOutput)
+    [IO.Directory]::CreateDirectory($root) | Out-Null
     try { $lockStream = [IO.File]::Open((Join-Path $root 'update.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }
     catch { throw 'Обновлятор сейчас занят. Повторите установку позже.' }
     if ((Test-Path -LiteralPath (Join-Path $root 'installation.json')) -or (Test-Path -LiteralPath (Join-Path $root 'config.json'))) {
@@ -255,6 +279,9 @@ try {
         if (-not $explicitSelection -and -not $selectedPath.Equals([string]$latestConfig.extensionPath,[StringComparison]::OrdinalIgnoreCase)) { throw 'Конфигурация изменилась во время установки. Повторите запуск.' }
         Assert-RetargetAllowed $latestConfig $selectedPath $root
     }
+    # The runner can briefly remain loaded after its child releases update.lock.
+    # Replace it first: a busy image must reject repair before other writes.
+    Write-AtomicFile (Join-Path $root 'LeadPartner.Runner.exe') $runnerBytes
     foreach ($name in $managedFiles) { Write-AtomicFile (Join-Path $root $name) $payload[$name] }
     $config = [ordered]@{schema=1;repository=$repository;channel='common';extensionPath=$selectedPath}
     Write-AtomicFile (Join-Path $root 'config.json') ($utf8.GetBytes(($config | ConvertTo-Json)))
@@ -264,6 +291,13 @@ try {
     if (-not $NoRegisterTask) { Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml $taskXml -Force | Out-Null }
 } finally {
     if ($lockStream) { $lockStream.Dispose() }
+    if ($compileRoot) {
+        $resolvedCompile = [IO.Path]::GetFullPath($compileRoot).TrimEnd('\')
+        $expectedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+        if ($resolvedCompile.StartsWith($expectedTemp,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedCompile) -match '^LeadPartnerUpdater-Compile-[a-f0-9]{32}$') {
+            Remove-Item -LiteralPath $resolvedCompile -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 if ($StartNow -and -not $NoRegisterTask) { Start-ScheduledTask -TaskName $taskName -TaskPath '\' }
 if (-not $NoRegisterTask) { Write-Host ('Готово. Общая версия: ' + $selectedPath + '. Проверка каждые 15 минут и при входе в Windows.'); Write-Host 'Закройте все окна браузера для применения подготовленного обновления.' }
