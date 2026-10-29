@@ -33,6 +33,55 @@ function Assert-NoReparseAncestors([string]$Path) {
         $cursor = $parent
     }
 }
+function Enter-LpRunnerMaintenance([string]$Root) {
+    # Coordinate with the fixed GUI watcher across this user's Windows sessions.
+    # Never terminate its PowerShell child: it may be committing a journal.
+    $identity = $ownerSid + '|' + [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\','/')).ToUpperInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $suffix = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    $state = [pscustomobject]@{StopEvent=$null;Mutex=$null;Acquired=$false}
+    try {
+        $state.StopEvent = [Threading.EventWaitHandle]::new($false,[Threading.EventResetMode]::ManualReset,('Global\LeadPartner.Common.Stop.' + $suffix))
+        $null = $state.StopEvent.Set()
+        $state.Mutex = [Threading.Mutex]::new($false,('Global\LeadPartner.Common.Runner.' + $suffix))
+        try { $state.Acquired = $state.Mutex.WaitOne([TimeSpan]::FromSeconds(60)) }
+        catch [Threading.AbandonedMutexException] { $state.Acquired = $true }
+        if (-not $state.Acquired) { throw 'Обновлятор завершает текущую операцию. Повторите установку позже.' }
+        # A previous one-shot runner has no event. Also allow the last few ms
+        # between resident mutex release and Windows unmapping its image.
+        $image = Join-Path $Root 'LeadPartner.Runner.exe'
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $busy = $false
+            foreach ($process in @(Get-Process -Name 'LeadPartner.Runner' -ErrorAction SilentlyContinue)) {
+                try { if ($process.Path -and $process.Path.Equals($image,[StringComparison]::OrdinalIgnoreCase)) { $busy = $true } }
+                catch { }
+                finally { $process.Dispose() }
+            }
+            if (-not $busy) { break }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Обновлятор ещё завершает работу. Повторите установку позже.' }
+            Start-Sleep -Milliseconds 50
+        } while ($true)
+        return $state
+    } catch {
+        Exit-LpRunnerMaintenance $state
+        throw
+    }
+}
+
+function Exit-LpRunnerMaintenance($State) {
+    if (-not $State) { return }
+    try { if ($State.StopEvent) { $null = $State.StopEvent.Reset() } }
+    finally {
+        try { if ($State.Acquired -and $State.Mutex) { $State.Mutex.ReleaseMutex() } }
+        finally {
+            if ($State.Mutex) { $State.Mutex.Dispose() }
+            if ($State.StopEvent) { $State.StopEvent.Dispose() }
+        }
+    }
+}
+
 function Get-ValidatedExistingTask {
     $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
@@ -85,7 +134,9 @@ if (-not $NoUnregisterTask) {
     $task = Get-ValidatedExistingTask
 }
 $lockStream = $null
+$runnerMaintenance = $null
 try {
+    $runnerMaintenance = Enter-LpRunnerMaintenance $root
     try { $lockStream = [IO.File]::Open((Join-Path $root 'update.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }
     catch { throw 'Обновлятор сейчас занят. Повторите удаление позже.' }
     if (-not $NoUnregisterTask -and $task) { Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false }
@@ -96,6 +147,7 @@ try {
     }
 } finally {
     if ($lockStream) { $lockStream.Dispose() }
+    Exit-LpRunnerMaintenance $runnerMaintenance
 }
 # Keep installation.json and update.lock for safe reinstallation, plus every
 # backup, stage, journal, status, log and unrecognised file for recovery.

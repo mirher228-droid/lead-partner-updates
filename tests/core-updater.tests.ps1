@@ -67,6 +67,26 @@ function Reinventory($package) {
     foreach($file in $i.files) { $file.sha256=Sha ([IO.File]::ReadAllBytes((Join-Path $package $file.path))) }
     Write-Json (Join-Path $package 'ROOTRELEASE_FILES.json') $i
 }
+function Set-NextRelease($f, [scriptblock]$nextMutate = {}) {
+    $script:channel.version='1.2.31'
+    $script:channel.archive.url='https://github.com/mirher228-droid/lead-partner-updates/releases/download/common-v1.2.31/Lead-Partner-Common-1.2.31.zip'
+    Set-Payload $f {
+        param($p)
+        $m=Get-Content (Join-Path $p 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $m.version='1.2.31';Write-Json (Join-Path $p 'manifest.json') $m
+        $i=Get-Content (Join-Path $p 'ROOTRELEASE_FILES.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $i.version='1.2.31';Write-Json (Join-Path $p 'ROOTRELEASE_FILES.json') $i
+        [IO.File]::WriteAllText((Join-Path $p 'background.js'),'latest-background')
+        Reinventory $p
+        & $nextMutate $p
+    }
+}
+function Assert-SavedStage($f, [string]$zipHash, [string]$metadata, [string]$version = '1.2.30') {
+    Assert ((Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')))) -ceq $zipHash) 'Prior staged archive was replaced'
+    Assert ([IO.File]::ReadAllText((Join-Path $f.state 'staged.json')) -ceq $metadata) 'Prior staged metadata was replaced'
+    $stagedManifest=Get-Content (Join-Path $f.state 'stage/manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($stagedManifest.version -ceq $version) 'Prior expanded stage was replaced'
+}
 function Test([string]$name,[scriptblock]$body) { if($Only -and $name -notlike $Only){return}; try { & $body; $script:passed++; Write-Output "PASS $name" } catch { $script:failed++; Write-Output "FAIL $name : $($_.Exception.Message)" } }
 function New-EntryHarness($f,[switch]$LogicalError) {
     # Copy real runtime; wrap its byte-request boundary in the fixture only, keeping the shipped entry hook-free.
@@ -98,8 +118,124 @@ try {
     }
     Test 'stages with browser open and applies staged bytes offline after close' {
         $f=New-Fixture; $r=Invoke-TestUpdate $f {$true}; Assert ($r.status -eq 'staged') 'Expected staged'; Assert ((Manifest $f).version -eq '1.2.29') 'Open browser was modified'
-        $script:request={param($url) throw 'offline'}; $r=Invoke-TestUpdate $f
+        $script:channelChecks=0;$script:request={param($url) $script:channelChecks++;throw 'offline'}; $r=Invoke-TestUpdate $f
         Assert ($r.status -eq 'updated') 'Saved stage not applied offline'; Assert ((Manifest $f).version -eq '1.2.30') 'Saved version not applied'
+        Assert ($script:channelChecks -eq 1) 'Saved stage bypassed the fresh channel check'
+    }
+    Test 'refreshes Friday stage to Monday latest before closed-browser apply' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        Set-NextRelease $f
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and $r.version -eq '1.2.31') 'Applied old stage instead of latest release'
+        Assert ((Manifest $f).version -eq '1.2.31') 'Latest manifest was not installed'
+        Assert ([IO.File]::ReadAllText((Join-Path $f.ext 'background.js')) -ceq 'latest-background') 'Latest package content was not installed'
+    }
+    Test 'replaces pending stage with validated latest while browser stays open' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        Set-NextRelease $f
+        $r=Invoke-TestUpdate $f {$true}
+        Assert ($r.status -eq 'staged' -and $r.version -eq '1.2.31') 'Latest release did not replace pending stage'
+        Assert ((Manifest $f).version -eq '1.2.29') 'Open browser extension changed'
+        $saved=Get-Content (Join-Path $f.state 'staged.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert ($saved.version -eq '1.2.31') 'Latest stage metadata was not saved'
+        Assert ((Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')))) -ceq $script:channel.archive.sha256) 'Latest stage archive was not saved'
+        $script:request={param($url) throw 'offline'};$r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.31') 'Latest saved stage did not survive offline application'
+    }
+    Test 'unchanged channel reuses saved archive without another package download' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $script:channelChecks=0;$script:request={param($url)
+            if($url -cne $script:LpEndpoint){throw 'Unexpected package redownload'}
+            $script:channelChecks++;return ,([Text.Encoding]::UTF8.GetBytes(($script:channel | ConvertTo-Json -Depth 10)))
+        }
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Unchanged release did not use saved bytes'
+        Assert ($script:channelChecks -eq 1) 'Unchanged staged release skipped channel check'
+    }
+    Test 'offline open-browser retry preserves complete verified stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        $script:channelChecks=0;$script:request={param($url) $script:channelChecks++;throw 'offline'}
+        $r=Invoke-TestUpdate $f {$true}
+        Assert ($r.status -eq 'staged') 'Offline retry discarded valid pending stage'
+        Assert ($script:channelChecks -eq 1) 'Offline retry skipped channel check'
+        Assert-SavedStage $f $hash $metadata
+        Assert ((Manifest $f).version -eq '1.2.29') 'Offline retry modified open browser extension'
+    }
+    Test 'recovers interrupted staged archive promotion before offline apply' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $candidate=Join-Path $f.state 'candidate';[void][IO.Directory]::CreateDirectory($candidate)
+        [IO.File]::Copy((Join-Path $f.state 'staged.zip'),(Join-Path $candidate 'previous.zip'))
+        Set-NextRelease $f
+        [IO.File]::WriteAllBytes((Join-Path $f.state 'staged.zip'),$script:payload)
+        $script:request={param($url) throw 'offline'}
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Interrupted stage promotion lost offline fallback'
+    }
+    Test 'failed staged metadata save restores prior archive and expanded stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f
+        $blocked=[IO.File]::Open((Join-Path $f.state 'staged.json'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {Must-Reject $f;Assert-SavedStage $f $hash $metadata}finally{$blocked.Dispose()}
+        $script:request={param($url) throw 'offline'};$r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Failed metadata save left no usable fallback'
+    }
+    Test 'invalid fresh metadata falls back to verified saved stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $script:channelChecks=0;$script:request={param($url) $script:channelChecks++;return ,([Text.Encoding]::UTF8.GetBytes('{"schema":99}'))}
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Invalid metadata destroyed valid fallback'
+        Assert ($script:channelChecks -eq 1) 'Invalid metadata was never checked'
+    }
+    Test 'newer archive hash failure preserves prior stage and installed files' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f;$script:channel.archive.sha256='0'*64
+        Must-Reject $f;Assert-SavedStage $f $hash $metadata
+        Assert ([IO.File]::ReadAllText((Join-Path $f.ext 'background.js')) -ceq 'old-background') 'Corrupt latest release changed installed content'
+        $script:request={param($url) throw 'offline'};$r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Prior stage was not usable after rejected latest archive'
+    }
+    Test 'newer archive inventory failure preserves prior expanded stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f {param($p) [IO.File]::AppendAllText((Join-Path $p 'background.js'),'tampered')}
+        Must-Reject $f;Assert-SavedStage $f $hash $metadata
+    }
+    Test 'newer archive permission expansion preserves prior stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f {param($p) $m=Get-Content (Join-Path $p 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json;$m.permissions=@($m.permissions)+@('nativeMessaging');Write-Json (Join-Path $p 'manifest.json') $m;Reinventory $p}
+        Must-Reject $f;Assert-SavedStage $f $hash $metadata
+    }
+    Test 'newer archive identity change preserves prior stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f {param($p) $m=Get-Content (Join-Path $p 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json;$m | Add-Member -Force -NotePropertyName key -NotePropertyValue 'new-identity';Write-Json (Join-Path $p 'manifest.json') $m;Reinventory $p}
+        Must-Reject $f;Assert-SavedStage $f $hash $metadata
+    }
+    Test 'newer archive download failure preserves prior stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $hash=Sha ([IO.File]::ReadAllBytes((Join-Path $f.state 'staged.zip')));$metadata=[IO.File]::ReadAllText((Join-Path $f.state 'staged.json'))
+        Set-NextRelease $f;$script:request={param($url) if($url -ceq $script:LpEndpoint){return ,([Text.Encoding]::UTF8.GetBytes(($script:channel | ConvertTo-Json -Depth 10)))};throw 'archive unavailable'}
+        Must-Reject $f;Assert-SavedStage $f $hash $metadata
+    }
+    Test 'lower channel cannot replace a newer verified stage' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $script:channel.version='1.2.28';$script:channel.archive.url='https://github.com/mirher228-droid/lead-partner-updates/releases/download/common-v1.2.28/Lead-Partner-Common-1.2.28.zip'
+        $script:channelChecks=0;$script:request={param($url) if($url -cne $script:LpEndpoint){throw 'Downgrade download attempted'};$script:channelChecks++;return ,([Text.Encoding]::UTF8.GetBytes(($script:channel | ConvertTo-Json -Depth 10)))}
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'updated' -and (Manifest $f).version -eq '1.2.30') 'Lower channel replaced newer pending release'
+        Assert ($script:channelChecks -eq 1) 'Lower channel was never checked'
+    }
+    Test 'saved stage cannot downgrade a manually upgraded installation' {
+        $f=New-Fixture;Invoke-TestUpdate $f {$true} | Out-Null
+        $m=Manifest $f;$m.version='1.2.31';Write-Json (Join-Path $f.ext 'manifest.json') $m
+        $i=Get-Content (Join-Path $f.ext 'ROOTRELEASE_FILES.json') -Raw -Encoding UTF8 | ConvertFrom-Json;$i.version='1.2.31';Write-Json (Join-Path $f.ext 'ROOTRELEASE_FILES.json') $i
+        $r=Invoke-TestUpdate $f
+        Assert ($r.status -eq 'current' -and (Manifest $f).version -eq '1.2.31') 'Pending release downgraded manual upgrade'
+        Assert (-not (Test-Path (Join-Path $f.state 'staged.zip'))) 'Obsolete pending archive was retained'
     }
     Test 'checks browser again immediately before first extension write' {
         $f=New-Fixture; $script:browserCalls=0; $r=Invoke-TestUpdate $f { $script:browserCalls++; return ($script:browserCalls -gt 1) }

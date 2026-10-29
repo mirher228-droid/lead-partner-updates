@@ -26,7 +26,7 @@ $proof=@{console=[RunnerConsoleProbe]::GetConsoleWindow().ToInt64();config=$Conf
     $body+="`r`nexit $ExitCode`r`n"
     [IO.File]::WriteAllText((Join-Path $Root 'Update-LeadPartner.ps1'),$body,$utf8)
 }
-function Run-Fixture([string]$Runner,[string]$WorkingDirectory,[string]$Arguments='') {
+function Run-Fixture([string]$Runner,[string]$WorkingDirectory,[string]$Arguments='--once') {
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=$Runner;$info.WorkingDirectory=$WorkingDirectory;$info.Arguments=$Arguments
     $info.UseShellExecute=$false;$info.CreateNoWindow=$true
@@ -68,8 +68,10 @@ try {
     Assert ((Run-Fixture $runner $foreign) -eq 0) 'simultaneous large stdout/stderr are drained asynchronously without deadlock'
     Assert-NoChildConsole (Join-Path $own 'child-proof.json')
     Remove-Item -LiteralPath (Join-Path $own 'child-proof.json') -Force
-    Assert ((Run-Fixture $runner $foreign '-Command "anything"') -ne 0) 'runner rejects all external command arguments'
+    Assert ((Run-Fixture $runner $foreign '-Command "anything"') -ne 0) 'runner rejects external command arguments'
     Assert (-not(Test-Path -LiteralPath (Join-Path $own 'child-proof.json'))) 'rejected arguments do not start the child'
+    Assert ((Run-Fixture $runner $foreign '--once -Command "anything"') -eq 64) 'once mode accepts no extra command arguments'
+    Assert (-not(Test-Path -LiteralPath (Join-Path $own 'child-proof.json'))) 'invalid once arguments start no child'
     Remove-Item -LiteralPath (Join-Path $own 'Update-LeadPartner.ps1') -Force
     Assert ((Run-Fixture $runner $foreign) -ne 0) 'missing fixed entry fails with nonzero status and no visible prompt'
     Write-Entry $own

@@ -179,6 +179,55 @@ function Write-AtomicFile([string]$Path, [byte[]]$Bytes) {
     }
 }
 
+function Enter-LpRunnerMaintenance([string]$Root) {
+    # Coordinate with the fixed GUI watcher across this user's Windows sessions.
+    # Never terminate its PowerShell child: it may be committing a journal.
+    $identity = $ownerSid + '|' + [IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\','/')).ToUpperInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $suffix = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    $state = [pscustomobject]@{StopEvent=$null;Mutex=$null;Acquired=$false}
+    try {
+        $state.StopEvent = [Threading.EventWaitHandle]::new($false,[Threading.EventResetMode]::ManualReset,('Global\LeadPartner.Common.Stop.' + $suffix))
+        $null = $state.StopEvent.Set()
+        $state.Mutex = [Threading.Mutex]::new($false,('Global\LeadPartner.Common.Runner.' + $suffix))
+        try { $state.Acquired = $state.Mutex.WaitOne([TimeSpan]::FromSeconds(60)) }
+        catch [Threading.AbandonedMutexException] { $state.Acquired = $true }
+        if (-not $state.Acquired) { throw 'Обновлятор завершает текущую операцию. Повторите установку позже.' }
+        # A previous one-shot runner has no event. Also allow the last few ms
+        # between resident mutex release and Windows unmapping its image.
+        $image = Join-Path $Root 'LeadPartner.Runner.exe'
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $busy = $false
+            foreach ($process in @(Get-Process -Name 'LeadPartner.Runner' -ErrorAction SilentlyContinue)) {
+                try { if ($process.Path -and $process.Path.Equals($image,[StringComparison]::OrdinalIgnoreCase)) { $busy = $true } }
+                catch { }
+                finally { $process.Dispose() }
+            }
+            if (-not $busy) { break }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Обновлятор ещё завершает работу. Повторите установку позже.' }
+            Start-Sleep -Milliseconds 50
+        } while ($true)
+        return $state
+    } catch {
+        Exit-LpRunnerMaintenance $state
+        throw
+    }
+}
+
+function Exit-LpRunnerMaintenance($State) {
+    if (-not $State) { return }
+    try { if ($State.StopEvent) { $null = $State.StopEvent.Reset() } }
+    finally {
+        try { if ($State.Acquired -and $State.Mutex) { $State.Mutex.ReleaseMutex() } }
+        finally {
+            if ($State.Mutex) { $State.Mutex.Dispose() }
+            if ($State.StopEvent) { $State.StopEvent.Dispose() }
+        }
+    }
+}
+
 function New-TaskXml([string]$Root) {
     $commandXml = [Security.SecurityElement]::Escape((Join-Path $Root 'LeadPartner.Runner.exe'))
     $rootXml = [Security.SecurityElement]::Escape($Root)
@@ -189,12 +238,12 @@ function New-TaskXml([string]$Root) {
   <RegistrationInfo><Description>Обновление Lead-Partner · Общая текущего пользователя.</Description></RegistrationInfo>
   <Triggers>
     <LogonTrigger><Enabled>true</Enabled><UserId>$ownerSid</UserId></LogonTrigger>
-    <TimeTrigger><Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>$startBoundary</StartBoundary><Enabled>true</Enabled></TimeTrigger>
+    <TimeTrigger><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>$startBoundary</StartBoundary><Enabled>true</Enabled></TimeTrigger>
   </Triggers>
   <Principals><Principal id="CurrentUser"><UserId>$ownerSid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>false</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT10M</ExecutionTimeLimit><Priority>7</Priority>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority>
   </Settings>
   <Actions Context="CurrentUser"><Exec><Command>$commandXml</Command><Arguments></Arguments><WorkingDirectory>$rootXml</WorkingDirectory></Exec></Actions>
 </Task>
@@ -255,6 +304,7 @@ if (-not $NoRegisterTask) {
 }
 $lockStream = $null
 $compileRoot = $null
+$runnerMaintenance = $null
 try {
     # Compile the exact source/builder bytes read during preflight. No assembly
     # is loaded into this installer. Compile before creating the managed root:
@@ -271,6 +321,7 @@ try {
     . $compileBuilder
     Build-LpSilentRunner -SourcePath $compileSource -OutputPath $compileOutput | Out-Null
     $runnerBytes = [IO.File]::ReadAllBytes($compileOutput)
+    $runnerMaintenance = Enter-LpRunnerMaintenance $root
     [IO.Directory]::CreateDirectory($root) | Out-Null
     try { $lockStream = [IO.File]::Open((Join-Path $root 'update.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) }
     catch { throw 'Обновлятор сейчас занят. Повторите установку позже.' }
@@ -291,6 +342,7 @@ try {
     if (-not $NoRegisterTask) { Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Xml $taskXml -Force | Out-Null }
 } finally {
     if ($lockStream) { $lockStream.Dispose() }
+    Exit-LpRunnerMaintenance $runnerMaintenance
     if ($compileRoot) {
         $resolvedCompile = [IO.Path]::GetFullPath($compileRoot).TrimEnd('\')
         $expectedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
@@ -299,8 +351,8 @@ try {
         }
     }
 }
-if ($StartNow -and -not $NoRegisterTask) { Start-ScheduledTask -TaskName $taskName -TaskPath '\' }
-if (-not $NoRegisterTask) { Write-Host ('Готово. Общая версия: ' + $selectedPath + '. Проверка каждые 15 минут и при входе в Windows.'); Write-Host 'Закройте все окна браузера для применения подготовленного обновления.' }
+if (-not $NoRegisterTask) { Start-ScheduledTask -TaskName $taskName -TaskPath '\' }
+if (-not $NoRegisterTask) { Write-Host ('Готово. Общая версия: ' + $selectedPath + '. Фоновая проверка версии каждые 30 секунд и при входе в Windows.'); Write-Host 'Закройте все окна браузера для применения подготовленного обновления.' }
 $result = [ordered]@{Status=$(if ($NoRegisterTask) {'installed-test'} else {'installed'});InstallRoot=$root;ConfigPath=(Join-Path $root 'config.json');TaskName=$taskName}
 if ($NoRegisterTask) { $result['TaskXml'] = $taskXml }
 [pscustomobject]$result

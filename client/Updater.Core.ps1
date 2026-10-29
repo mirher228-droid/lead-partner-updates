@@ -249,6 +249,17 @@ function Expand-LpArchive([string]$ZipPath,[string]$State,$Channel) {
     $inventory=Get-LpInventory $stage $Channel.version -Verify
     return @{path=$stage;manifest=$manifest;inventory=$inventory}
 }
+function Test-LpArchiveIntegrity([string]$ZipPath,$Channel) {
+    return ([IO.File]::Exists($ZipPath) -and (Get-Item -LiteralPath $ZipPath).Length -eq $Channel.archive.size -and (Get-LpHash ([IO.File]::ReadAllBytes($ZipPath))) -ceq $Channel.archive.sha256)
+}
+function Get-LpValidatedPackage([string]$ZipPath,[string]$State,$Channel,$Current) {
+    if(-not (Test-LpArchiveIntegrity $ZipPath $Channel)){throw 'Saved archive SHA256 or byte size mismatch.'}
+    $package=Expand-LpArchive $ZipPath $State $Channel
+    Assert-LpAccessSubset $Current $package.manifest
+    $oldKey=Get-LpProperty $Current 'key';$newKey=Get-LpProperty $package.manifest 'key'
+    if(($oldKey -and $newKey -and $oldKey -cne $newKey) -or (-not $oldKey -and $newKey)){throw 'Incoming manifest changes extension identity.'}
+    return $package
+}
 function Test-LpBrowserRunning {
     # Include background processes: closing the last window alone is insufficient.
     return (@(Get-Process -Name chrome,msedge,browser,chromium,brave,vivaldi,opera,firefox -ErrorAction SilentlyContinue).Count -gt 0)
@@ -356,21 +367,49 @@ function Invoke-LeadPartnerUpdate {
         if([IO.File]::Exists($zipPath) -and [IO.File]::Exists($metadata)){
             $channel=Read-LpJson $metadata;Assert-LpChannel $channel
             if((Compare-LpVersion $channel.version $current.version) -le 0){$channel=$null;[IO.File]::Delete($zipPath);[IO.File]::Delete($metadata)}
+            elseif([IO.File]::Exists((Get-LpChild $state 'candidate/previous.zip'))){
+                # A stop between ZIP and metadata promotion leaves the old archive available for recovery.
+                $previousZip=Get-LpChild $state 'candidate/previous.zip'
+                if(-not (Test-LpArchiveIntegrity $zipPath $channel) -and (Test-LpArchiveIntegrity $previousZip $channel)){
+                    [IO.File]::Replace($previousZip,$zipPath,(Get-LpChild $state 'candidate/interrupted.zip'))
+                    Remove-LpStateTree $state 'candidate'
+                }
+            }
         }
-        if(-not $channel){
+        # A pending package must not hide a newer channel release after a long browser session.
+        $latest=$null
+        try {
             $bytes=Get-LpRequestBytes $script:LpEndpoint 2MB $Request
-            $channel=[Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
-            Assert-LpChannel $channel
-            if((Compare-LpVersion $channel.version $current.version) -le 0){return [pscustomobject]@{status='current';currentVersion=$current.version;version=$current.version}}
-            $zipBytes=Get-LpRequestBytes $channel.archive.url $script:LpMaxZip $Request
-            if($zipBytes.LongLength -ne $channel.archive.size -or (Get-LpHash $zipBytes) -cne $channel.archive.sha256){throw 'Archive SHA256 or byte size mismatch.'}
-            [IO.File]::WriteAllBytes($zipPath,$zipBytes);Write-LpJson $metadata $channel
+            $latest=[Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+            Assert-LpChannel $latest
+        } catch {
+            if(-not $channel){throw}
+            # Offline or malformed channel: the saved package still requires full validation below.
+            $latest=$null
         }
-        if((Get-Item -LiteralPath $zipPath).Length -ne $channel.archive.size -or (Get-LpHash ([IO.File]::ReadAllBytes($zipPath))) -cne $channel.archive.sha256){throw 'Saved archive SHA256 or byte size mismatch.'}
-        $package=Expand-LpArchive $zipPath $state $channel
-        Assert-LpAccessSubset $current $package.manifest
-        $oldKey=Get-LpProperty $current 'key';$newKey=Get-LpProperty $package.manifest 'key'
-        if(($oldKey -and $newKey -and $oldKey -cne $newKey) -or (-not $oldKey -and $newKey)){throw 'Incoming manifest changes extension identity.'}
+        $package=$null
+        if($latest -and (Compare-LpVersion $latest.version $current.version) -gt 0 -and (-not $channel -or (Compare-LpVersion $latest.version $channel.version) -gt 0)){
+            $zipBytes=Get-LpRequestBytes $latest.archive.url $script:LpMaxZip $Request
+            if($zipBytes.LongLength -ne $latest.archive.size -or (Get-LpHash $zipBytes) -cne $latest.archive.sha256){throw 'Archive SHA256 or byte size mismatch.'}
+            # Keep the prior archive, metadata and expanded stage untouched until all incoming checks pass.
+            Remove-LpStateTree $state 'candidate'
+            $candidate=Get-LpChild $state 'candidate';[void][IO.Directory]::CreateDirectory($candidate)
+            try {
+                $incomingZip=Get-LpChild $candidate 'staged.zip';[IO.File]::WriteAllBytes($incomingZip,$zipBytes)
+                $package=Get-LpValidatedPackage $incomingZip $candidate $latest $current
+                $previousZip=Get-LpChild $candidate 'previous.zip';$hadZip=[IO.File]::Exists($zipPath)
+                if($hadZip){[IO.File]::Replace($incomingZip,$zipPath,$previousZip)}else{[IO.File]::Move($incomingZip,$zipPath)}
+                try {Write-LpJson $metadata $latest} catch {
+                    if($hadZip){[IO.File]::Replace($previousZip,$zipPath,$incomingZip)}else{[IO.File]::Delete($zipPath)}
+                    throw
+                }
+                $channel=$latest
+                Remove-LpStateTree $state 'stage'
+                $stage=Get-LpChild $state 'stage';[IO.Directory]::Move($package.path,$stage);$package.path=$stage
+            } finally {Remove-LpStateTree $state 'candidate'}
+        }
+        if(-not $channel){return [pscustomobject]@{status='current';currentVersion=$current.version;version=$current.version}}
+        if(-not $package){$package=Get-LpValidatedPackage $zipPath $state $channel $current}
         if(& $BrowserRunning){return [pscustomobject]@{status='staged';currentVersion=$current.version;version=$channel.version;reason='waiting for full browser exit'}}
         if(-not (Invoke-LpApply $state $extension $current $oldInventory $package $BrowserRunning)){return [pscustomobject]@{status='deferred';currentVersion=$current.version;version=$channel.version;reason='browser reopened'}}
         [IO.File]::Delete($zipPath);[IO.File]::Delete($metadata);Remove-LpStateTree $state 'stage'

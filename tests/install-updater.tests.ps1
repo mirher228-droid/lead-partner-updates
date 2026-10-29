@@ -71,7 +71,8 @@ try {
     $ns.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
     Assert ($xml.SelectSingleNode('//t:Principal/t:LogonType',$ns).InnerText -ceq 'InteractiveToken') 'task uses logged-in user without credentials'
     Assert ($xml.SelectSingleNode('//t:Principal/t:RunLevel',$ns).InnerText -ceq 'LeastPrivilege') 'task has limited privileges'
-    Assert ($xml.SelectSingleNode('//t:TimeTrigger/t:Repetition/t:Interval',$ns).InnerText -ceq 'PT15M') 'task repeats every 15 minutes'
+    Assert ($xml.SelectSingleNode('//t:TimeTrigger/t:Repetition/t:Interval',$ns).InnerText -ceq 'PT1M') 'one minute watchdog restarts a stopped watcher; runner owns the thirty second poll'
+    Assert ($xml.SelectSingleNode('//t:Settings/t:ExecutionTimeLimit',$ns).InnerText -ceq 'PT0S') 'resident watcher has no ten minute task timeout'
     Assert ($null -ne $xml.SelectSingleNode('//t:LogonTrigger/t:UserId',$ns)) 'task also starts on user logon'
     Assert ($xml.SelectSingleNode('//t:Exec/t:Command',$ns).InnerText -ceq (Join-Path $installRoot 'LeadPartner.Runner.exe')) 'task uses the exact owned GUI runner'
     $arguments = $xml.SelectSingleNode('//t:Exec/t:Arguments',$ns).InnerText

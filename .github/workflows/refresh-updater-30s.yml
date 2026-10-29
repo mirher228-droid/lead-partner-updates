@@ -1,0 +1,108 @@
+name: Publish thirty second Common updater setup
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/refresh-updater-30s.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Windows PowerShell 5.1 regression and lifecycle tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($testScript in @('./tests/core-updater.tests.ps1', './tests/install-updater.tests.ps1', './tests/release-tests.ps1', './tests/silent-runner.tests.ps1', './tests/task-owner-migration.tests.ps1', './tests/resident-runner.tests.ps1', './tests/resident-migration.tests.ps1')) {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $testScript
+            if ($LASTEXITCODE -ne 0) { throw "Test failed: $testScript" }
+          }
+  publish:
+    if: github.repository == 'mirher228-droid/lead-partner-updates'
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 15
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Download and validate unchanged Common 1.2.39 release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $releaseText = gh api "repos/$env:GH_REPO/releases/tags/common-v1.2.39"
+          if ($LASTEXITCODE -ne 0) { throw 'Missing Common release.' }
+          $release = $releaseText | ConvertFrom-Json
+          $latestText = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify latest release.' }
+          $metadata = Test-CommonReleaseMetadata -Release $release -ExpectedTag common-v1.2.39 -LatestTag (($latestText | ConvertFrom-Json).tag_name)
+          $original = Join-Path $env:RUNNER_TEMP 'common-before'
+          [IO.Directory]::CreateDirectory($original) | Out-Null
+          foreach ($name in @($metadata.AssetName, 'update.json')) {
+            gh release download common-v1.2.39 --repo $env:GH_REPO --pattern $name --dir $original
+            if ($LASTEXITCODE -ne 0) { throw "Cannot download $name" }
+          }
+          if ((Get-FileHash -LiteralPath (Join-Path $original $metadata.AssetName)).Hash.ToLowerInvariant() -cne 'f1076d38e35b442d30cc417344cbdb7ff07de45310c6c6b0d20ab1c7ffaf2c05') { throw 'Common ZIP changed.' }
+          if ((Get-FileHash -LiteralPath (Join-Path $original 'update.json')).Hash.ToLowerInvariant() -cne 'dab1b6e6f4baad9a81d511a38bccec9e1481919cba39bd5349b4d0409d124ccd') { throw 'Channel changed.' }
+          $releaseText | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'release-before.json') -Encoding utf8NoBOM
+          ./tools/Publish-Release.ps1 -ArchivePath (Join-Path $original $metadata.AssetName) -Version 1.2.39 -ReleaseTag common-v1.2.39 -OutputDirectory ./dist -ExpectedSha256 f1076d38e35b442d30cc417344cbdb7ff07de45310c6c6b0d20ab1c7ffaf2c05
+          # Publish-Release also constructs a descriptor. This setup-only job
+          # deliberately never uploads it: existing channel bytes stay exact.
+      - name: Recheck release identities and upload only Windows setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'release-before.json') -Raw | ConvertFrom-Json
+          $currentText = gh api "repos/$env:GH_REPO/releases/tags/common-v1.2.39"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck release.' }
+          $current = $currentText | ConvertFrom-Json
+          $latestText = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0 -or ($latestText | ConvertFrom-Json).tag_name -cne 'common-v1.2.39') { throw 'Latest release moved; do not replace its setup.' }
+          if ($before.id -ne $current.id -or $current.draft -or $current.prerelease) { throw 'Release identity changed.' }
+          foreach ($name in @('Lead-Partner-Common-1.2.39.zip', 'update.json')) {
+            $old = @($before.assets | Where-Object name -CEQ $name)
+            $now = @($current.assets | Where-Object name -CEQ $name)
+            if ($old.Count -ne 1 -or $now.Count -ne 1 -or $old[0].id -ne $now[0].id -or $old[0].size -ne $now[0].size -or $old[0].updated_at -cne $now[0].updated_at) { throw "Protected asset changed: $name" }
+          }
+          gh release upload common-v1.2.39 ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip --repo $env:GH_REPO --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Setup upload failed.' }
+          $oldParagraph = 'Если автообновитель уже установлен, повторная установка не нужна: проверка выполняется каждые 15 минут и при входе в Windows. Для применения подготовленного обновления все окна Chrome, Яндекс Браузера и Edge должны быть закрыты.'
+          $newParagraph = 'Обновлён установщик автообновления: проверка версии каждые 30 секунд без всплывающих окон. Для перехода с прежних 15 минут сотруднику нужно один раз скачать свежий Lead-Partner-Common-AutoUpdate-Setup.zip, полностью распаковать его и снова запустить Install-AutoUpdate.bat. Удалять расширение и прежний обновлятор не нужно. Архив расширения 1.2.39 и канал update.json не изменены. Подготовленное обновление применяется после полного завершения браузеров; мгновенный повторный запуск может отложить установку.'
+          $notes = if ($current.body.Contains($oldParagraph)) { $current.body.Replace($oldParagraph, $newParagraph) } else { $current.body + "`n`n" + $newParagraph }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'updated-release-notes.txt'
+          [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
+          gh release edit common-v1.2.39 --repo $env:GH_REPO --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { throw 'Setup published, but release instructions could not be updated.' }
+      - name: Verify public setup and both protected assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $verify = Join-Path $env:RUNNER_TEMP 'common-after'
+          [IO.Directory]::CreateDirectory($verify) | Out-Null
+          foreach ($name in @('Lead-Partner-Common-AutoUpdate-Setup.zip', 'Lead-Partner-Common-1.2.39.zip', 'update.json')) {
+            gh release download common-v1.2.39 --repo $env:GH_REPO --pattern $name --dir $verify
+            if ($LASTEXITCODE -ne 0) { throw "Cannot verify $name" }
+          }
+          $setupHash = (Get-FileHash -LiteralPath ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip).Hash
+          if ($setupHash -cne (Get-FileHash -LiteralPath (Join-Path $verify 'Lead-Partner-Common-AutoUpdate-Setup.zip')).Hash) { throw 'Published setup mismatch.' }
+          foreach ($name in @('Lead-Partner-Common-1.2.39.zip', 'update.json')) {
+            if ((Get-FileHash -LiteralPath (Join-Path $verify $name)).Hash -cne (Get-FileHash -LiteralPath (Join-Path (Join-Path $env:RUNNER_TEMP 'common-before') $name)).Hash) { throw "Protected bytes changed: $name" }
+          }
+          "Published silent 30-second setup only. Common ZIP and update.json unchanged. Setup SHA256: $setupHash" >> $env:GITHUB_STEP_SUMMARY
