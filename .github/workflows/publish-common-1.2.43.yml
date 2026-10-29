@@ -1,0 +1,103 @@
+name: Publish verified Common 1.2.43
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-common-1.2.43.yml'
+      - 'releases/common-v1.2.43/Lead-Partner-Common-1.2.43.zip'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'mirher228-droid/lead-partner-updates'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Run existing Windows PowerShell 5.1 updater tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($test in @('./tests/core-updater.tests.ps1','./tests/install-updater.tests.ps1','./tests/release-tests.ps1','./tests/silent-runner.tests.ps1','./tests/task-owner-migration.tests.ps1','./tests/resident-runner.tests.ps1','./tests/resident-migration.tests.ps1')) {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $test
+            if ($LASTEXITCODE -ne 0) { throw "Updater tests failed: $test" }
+          }
+      - name: Validate Common archive and construct channel assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/Publish-Release.ps1 -ArchivePath './releases/common-v1.2.43/Lead-Partner-Common-1.2.43.zip' -Version '1.2.43' -ReleaseTag 'common-v1.2.43' -ExpectedSha256 '9c660448d9a959615df87867ffafe72bb2e46e9fce04296359cdd8906bdb7305' -OutputDirectory './dist'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $taskSetupZip = [IO.Compression.ZipFile]::OpenRead((Join-Path './dist' 'Lead-Partner-Common-AutoUpdate-Setup.zip'))
+          try {
+            $taskSetupNames = @($taskSetupZip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+            $taskExpectedSetupNames = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1') | Sort-Object
+            if ($taskSetupNames.Count -ne 9 -or @(Compare-Object $taskSetupNames $taskExpectedSetupNames -CaseSensitive).Count -ne 0) { throw 'Setup ZIP must contain exactly the nine approved silent-updater files.' }
+          } finally { $taskSetupZip.Dispose() }
+      - name: Upload and verify all draft assets before publishing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'common-v1.2.43'
+          $archive = './releases/common-v1.2.43/Lead-Partner-Common-1.2.43.zip'
+          $setup = './dist/Lead-Partner-Common-AutoUpdate-Setup.zip'
+          $channel = './dist/update.json'
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the active release.' }
+          $latest = $latestJson | ConvertFrom-Json
+          if ($latest.tag_name -cne 'common-v1.2.42') { throw 'The active release changed. Refusing to replace an unexpected channel.' }
+          $null = gh release view $tag --repo $env:GH_REPO --json databaseId 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'This release tag already exists. Refusing to overwrite published assets.' }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne '9c660448d9a959615df87867ffafe72bb2e46e9fce04296359cdd8906bdb7305') { throw 'Archive bytes changed after validation.' }
+          $notes = @'
+          Общая версия 1.2.43.
+          
+          Исправлено определение источников, когда LeadChat добавляет к коду приписку МНЧ, БТ или КП. Источник и ссылка берутся из действующего общего каталога, в том числе после добавления или изменения записи. Пример: М14 МНЧ распознаётся как каталожный М14.
+          
+          Сохранены точные названия и защита от неоднозначных ссылок. Исправлена дополнительная блокировка создания при таких приписках. Автоматический отзыв проверен для007,723,748; общий native-модуль дополнен поддержкой748 и реальных подписей партнёров.
+          
+          Настройки, учёт сотрудников, карты и остальные функции сохранены. Приватная админская версия в публичный выпуск не входит.
+          
+          Установленный обновлятор загрузит пакет в фоне и применит после полного завершения браузеров. Проверка каждые30секунд сохранена; повторная установка актуального обновлятора не требуется.
+          '@
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'common-notes.txt'), $notes, [Text.UTF8Encoding]::new($false))
+          gh release create $tag $archive $setup $channel --repo $env:GH_REPO --draft --target $env:GITHUB_SHA --title 'Общая версия 1.2.43' --notes-file (Join-Path $env:RUNNER_TEMP 'common-notes.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Draft upload did not complete. The existing channel remains active.' }
+          $verify = Join-Path $env:RUNNER_TEMP 'verify-common-1.2.43'
+          [IO.Directory]::CreateDirectory($verify) | Out-Null
+          gh release download $tag --repo $env:GH_REPO --dir $verify
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download draft assets for verification.' }
+          foreach ($source in @($archive,$setup,$channel)) {
+            $download = Join-Path $verify ([IO.Path]::GetFileName($source))
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash) { throw 'Draft asset hash mismatch. Release was not activated.' }
+          }
+          $draftId = gh release view $tag --repo $env:GH_REPO --json databaseId --jq '.databaseId'
+          if ($LASTEXITCODE -ne 0 -or $draftId -notmatch '^[1-9][0-9]*$') { throw 'Cannot identify the uploaded draft.' }
+          $draftJson = gh api "repos/$env:GH_REPO/releases/$draftId"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the verified draft.' }
+          $draft = $draftJson | ConvertFrom-Json
+          if ($draft.draft -ne $true -or $draft.prerelease -ne $false -or $draft.assets.Count -ne 3) { throw 'Unexpected draft metadata.' }
+          if ($draft.tag_name -cne $tag -or $draft.target_commitish -cne $env:GITHUB_SHA) { throw 'Draft tag or target commit changed.' }
+          $taskAssetNames = @($draft.assets | ForEach-Object { [string]$_.name } | Sort-Object)
+          if (($taskAssetNames -join '|') -cne 'Lead-Partner-Common-1.2.43.zip|Lead-Partner-Common-AutoUpdate-Setup.zip|update.json') { throw 'Unexpected draft asset names.' }
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0 -or ($latestJson | ConvertFrom-Json).tag_name -cne 'common-v1.2.42') { throw 'Another release became active during upload. Draft left unpublished.' }
+          gh release edit $tag --repo $env:GH_REPO --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub did not confirm release publication.' }
+          $publishedJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0 -or ($publishedJson | ConvertFrom-Json).tag_name -cne $tag) { throw 'Latest release was not confirmed.' }
+          'Common 1.2.43 archive, setup and update.json verified and published.' >> $env:GITHUB_STEP_SUMMARY
