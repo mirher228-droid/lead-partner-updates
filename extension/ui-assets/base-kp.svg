@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="kp-title">
+  <title id="kp-title">Компьютер с клавиатурой и мышью</title>
+  <defs>
+    <linearGradient id="kp-edge" x1="13" y1="19" x2="109" y2="113" gradientUnits="userSpaceOnUse"><stop stop-color="#b3ff8c"/><stop offset=".46" stop-color="#66ff31"/><stop offset="1" stop-color="#28c80b"/></linearGradient>
+    <linearGradient id="kp-case" x1="35" y1="21" x2="88" y2="90" gradientUnits="userSpaceOnUse"><stop stop-color="#143d20"/><stop offset=".45" stop-color="#071c10"/><stop offset="1" stop-color="#0a2b13"/></linearGradient>
+    <linearGradient id="kp-screen" x1="22" y1="29" x2="95" y2="77" gradientUnits="userSpaceOnUse"><stop stop-color="#104121"/><stop offset=".55" stop-color="#052015"/><stop offset="1" stop-color="#0d3118"/></linearGradient>
+    <linearGradient id="kp-shine" x1="30" y1="24" x2="71" y2="69" gradientUnits="userSpaceOnUse"><stop stop-color="#c8ffae" stop-opacity=".18"/><stop offset="1" stop-color="#c8ffae" stop-opacity="0"/></linearGradient>
+    <filter id="kp-glow" x="-30%" y="-35%" width="160%" height="170%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="1.4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g filter="url(#kp-glow)">
+    <path d="M53 84h18v12l13 5v3H40v-3l13-5V84Z" fill="url(#kp-case)" stroke="url(#kp-edge)" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M58 87v10m-11 4h29" stroke="#78ff47" stroke-opacity=".5" stroke-linecap="round"/>
+    <rect x="10" y="17" width="104" height="70" rx="6.5" fill="url(#kp-case)" stroke="url(#kp-edge)" stroke-width="2.2"/>
+    <rect x="16" y="23" width="92" height="54" rx="2.5" fill="url(#kp-screen)" stroke="#4edb24" stroke-opacity=".65"/>
+    <path d="M20 27h56L39 73H20V27Z" fill="url(#kp-shine)"/>
+    <path d="M22 32h80" stroke="#76ff48" stroke-opacity=".25"/>
+    <circle cx="24" cy="28" r="1" fill="#89ff60"/><circle cx="28" cy="28" r="1" fill="#57b63b"/><circle cx="32" cy="28" r="1" fill="#347f27"/>
+    <rect x="24" y="39" width="25" height="27" rx="2" fill="#43d51d" fill-opacity=".13" stroke="#58e72d" stroke-opacity=".45"/>
+    <path d="m31 50 5-5 5 5m-5-5v15" stroke="#8bff5e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M57 42h22m-22 7h38m-38 7h30m-30 7h18" stroke="#75fb4a" stroke-width="2" stroke-opacity=".65" stroke-linecap="round"/>
+    <path d="M19 81h39" stroke="#80ff50" stroke-opacity=".15" stroke-linecap="round"/>
+    <circle cx="62" cy="82" r="1.5" fill="#86ff53"/>
+    <path d="M15 104h72l7 14a2 2 0 0 1-2 3H9a2 2 0 0 1-2-3l6-12a2 2 0 0 1 2-2Z" fill="url(#kp-case)" stroke="url(#kp-edge)" stroke-width="1.8"/>
+    <path d="M20 109h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m-63 5h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m5 0h3m-57 4h8m5 0h27m5 0h8" stroke="#77f84a" stroke-width="2" stroke-linecap="round" stroke-opacity=".8"/>
+    <path d="M103 101c0-6 8-6 8-12" stroke="#43b424" stroke-width="1.5" stroke-linecap="round"/>
+    <rect x="101" y="101" width="16" height="22" rx="7.5" fill="url(#kp-case)" stroke="url(#kp-edge)" stroke-width="1.8"/>
+    <path d="M102 110h14m-7-8v8" stroke="#5de82e" stroke-opacity=".6"/>
+    <path d="M109 104v3" stroke="#b0ff87" stroke-width="1.8" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,116 @@
+{
+  "manifest_version": 3,
+  "name": "Lead-Partner · Общая",
+  "short_name": "LP Общая",
+  "version": "1.2.50",
+  "description": "Панель Авито в LeadChat: заявки, карты и общий каталог. Оригинальные страницы CRM не изменяются.",
+  "action": {
+    "default_title": "Lead-Partner · Общая",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "unlimitedStorage",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "*://188-225-34-82.sslip.io/*",
+    "*://72-56-68-159.sslip.io/*",
+    "*://chat.partner-lead-centre.ru/*",
+    "https://geocode-maps.yandex.ru/*",
+    "https://mnc-lead-centre.ru/*",
+    "https://bt-lead-centre.ru/*",
+    "https://kp-lead-centre.ru/*",
+    "https://num.voxlink.ru/*",
+    "http://num.voxlink.ru/*",
+    "https://yandex.ru/*",
+    "https://yandex.com/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*",
+    "https://suggest-maps.yandex.ru/*"
+  ],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "leadchat-request-panel.html"
+      ],
+      "matches": [
+        "*://188-225-34-82.sslip.io/*",
+        "*://72-56-68-159.sslip.io/*",
+        "*://chat.partner-lead-centre.ru/*"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://188-225-34-82.sslip.io/*",
+        "*://72-56-68-159.sslip.io/*",
+        "*://chat.partner-lead-centre.ru/*"
+      ],
+      "js": [
+        "leadchat-request-context-main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://188-225-34-82.sslip.io/*",
+        "*://72-56-68-159.sslip.io/*",
+        "*://chat.partner-lead-centre.ru/*"
+      ],
+      "js": [
+        "leadpartner-rules.js",
+        "leadchat-address.js",
+        "leadchat-request-context.js",
+        "leadchat-request-host.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://yandex.ru/maps/*",
+        "https://yandex.com/maps/*"
+      ],
+      "js": [
+        "crm-map-button.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://yandex.ru/map-widget/*"
+      ],
+      "js": [
+        "leadchat-map-widget.js"
+      ],
+      "css": [
+        "leadchat-map-widget.css"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ],
+  "minimum_chrome_version": "116",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+  }
+}

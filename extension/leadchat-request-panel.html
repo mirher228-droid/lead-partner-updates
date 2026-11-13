@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="dark" name="color-scheme"/>
+<title>Заявка · Lead-Partner</title>
+<link href="leadchat-request-panel.css" rel="stylesheet"/>
+<link href="leadchat-date-picker.css" rel="stylesheet"/>
+<link href="common-ui.css" rel="stylesheet"/>
+<script defer="" src="leadpartner-rules.js"></script>
+<script defer="" src="crm-avito-owner-sources.js"></script>
+<script defer="" src="avito-source-catalog.js"></script>
+<script defer="" src="city-combobox.js"></script>
+<script defer="" src="leadchat-crm-html.js"></script>
+<script defer="" src="leadchat-crm-service.js"></script>
+<script defer="" src="leadchat-address.js"></script>
+<script defer="" src="leadchat-map-search.js"></script>
+<script defer="" src="leadchat-map-route.js"></script>
+<script defer="" src="crm-avito-core.js"></script>
+<script defer="" src="leadchat-request-controller.js"></script>
+<script defer="" src="leadchat-crm-city-catalog.js"></script>
+<script defer="" src="leadchat-worktype-data.js"></script>
+<script defer="" src="leadchat-comment-worktype.js"></script>
+<script defer="" src="leadchat-date-picker.js"></script>
+<script defer="" src="leadchat-price-ui.js"></script>
+<script defer="" src="leadchat-ozvuchka-data.js"></script>
+<script defer="" src="leadchat-panel-tools.js"></script>
+<script defer="" src="leadchat-request-panel.js"></script>
+</head>
+<body>
+<main aria-busy="true" class="request-panel" id="panel">
+<header class="panel-header crm-reference-header">
+<div class="brand"><span aria-hidden="true" class="brand-mark">↗</span><div><span class="eyebrow">LEAD-PARTNER</span><h1 id="panel-title">Создание заявки</h1></div></div>
+<div class="header-actions"><button class="button secondary expand-panel" id="expand-panel" title="Развернуть форму по образцу" type="button">⛶ Развернуть</button><button class="button secondary new-action" hidden="" id="new-request" type="button">＋ Добавить заявку</button><button aria-label="Закрыть панель" class="icon-button" id="close-panel" title="Закрыть панель (Esc)" type="button">×</button></div></header>
+<section class="record-toolbar" id="record-toolbar" hidden aria-label="Сохранённая заявка">
+<div class="record-title-row"><a id="record-heading-link" target="_blank" rel="noopener noreferrer"></a><span class="status-badge" id="native-record-status"></span><span id="record-request-type" class="record-request-type" hidden></span><span class="request-indicator call-check-indicator" id="record-call-indicator" hidden role="status">Заявка на прозвоне</span><span id="record-payment" class="record-payment" hidden></span><span id="record-lock-label" hidden>Только просмотр</span></div>
+<div class="record-command-row"><div id="native-record-actions" class="record-actions"></div><button class="button secondary" id="restore-request" type="button" hidden>Вернуть в работу</button><button class="button secondary claim-action" id="create-claim" type="button">Создать претензию</button></div>
+<div class="chat-tools"><select id="record-followup" aria-label="Создать повтор или гарантию"><option value="">Повтор / гарантия</option><option value="repeat">Создать повтор</option><option value="warranty">Создать гарантию</option></select><span class="lateness-badge" id="record-lateness" hidden role="status" aria-live="polite"></span></div>
+</section>
+<form class="cancel-form form-section" id="cancel-form" hidden><h3 id="cancel-title">Отмена заявки</h3><label class="field">Причина отмены<select id="cancel-reason" required><option value="">Выберите причину</option></select></label><label class="field" id="cancel-comment-label" hidden>Комментарий<textarea id="cancel-comment" maxlength="20000" rows="4"></textarea></label><div class="record-actions"><button class="button primary cancel-action" id="save-cancellation" type="submit">Отменить заявку</button></div></form>
+<form class="claim-form form-section" id="claim-form" hidden><h3>Создать претензию</h3><label class="field">Тип претензии<select id="claim-type" required><option value="">Выберите тип</option></select></label><label class="field">Комментарий<textarea id="claim-comment" maxlength="20000" rows="4"></textarea></label><div class="record-actions"><button class="button secondary" id="cancel-claim" type="button">Отмена</button><button class="button primary" id="save-claim" type="submit">Сохранить</button></div></form>
+<div class="context-strip"><span aria-hidden="true" class="context-dot"></span><span id="context-label">Ожидаем данные текущего диалога</span><span class="draft-state" id="draft-state"></span></div>
+<div aria-live="polite" class="context-facts" hidden="" id="context-facts"><span id="fact-partner"></span><span id="fact-source"></span><span id="fact-work"></span><span id="fact-existing"></span></div>
+<div aria-live="polite" class="notice" id="status" role="status">Подключаем панель к диалогу…</div>
+<button class="button secondary" hidden="" id="retry-load" type="button">Повторить загрузку формы CRM</button>
+<div class="notice notice-error" hidden="" id="error" role="alert"></div>
+<div class="recovery" hidden="" id="recovery"><p id="recovery-text"></p><button class="button secondary" id="check-result" type="button">Проверить результат в CRM</button></div>
+<div class="duplicate-list" hidden="" id="duplicates"></div>
+<form id="request-form" novalidate="">
+<fieldset class="fields crm-layout-v155" disabled="" id="editable-fields">
+<section class="form-section reference-card customer-card">
+<div class="section-heading reference-heading"><span class="reference-icon">♙</span><h2>Клиент</h2></div>
+<div class="client-row phone-city-row">
+<div class="field phone-field"><span class="phone-label-row"><label for="phone">Телефон <span class="required">*</span></label><button type="button" id="extra-phone-toggle" class="extra-phone-toggle" aria-label="Добавить дополнительный телефон" aria-controls="extra-phone-row" aria-expanded="false" hidden>+</button></span><span class="phone-input-wrap"><input aria-describedby="phone-status" autocomplete="tel" id="phone" name="phone" placeholder="+7 …" required="" type="tel"/></span></div>
+<label class="field">Город <span class="required">*</span><select id="cityId" name="cityId" required=""><option value="">Загрузка городов…</option></select></label>
+</div>
+<div id="extra-phone-row" class="extra-phone-reveal" data-open="false" aria-hidden="true" inert hidden><div class="extra-phone-clip"><label class="field extra-phone-field" for="phone-extra-1">Дополнительный телефон<input type="tel" id="phone-extra-1" name="Customer[phone_extra_1]" placeholder="Телефон (доп.1)" autocomplete="tel" inputmode="tel" disabled/></label><label class="field extra-phone-field" for="phone-extra-2" hidden>Дополнительный телефон 2<input type="tel" id="phone-extra-2" name="Customer[phone_extra_2]" placeholder="Телефон (доп.2)" autocomplete="tel" inputmode="tel" disabled/></label></div></div>
+<div class="phone-check-row"><span aria-live="polite" class="field-help" id="phone-status"></span><button class="button quiet" hidden="" id="retry-phone" type="button">Проверить ещё раз</button></div>
+<div class="client-row name-age-row">
+<label class="field name-field">Имя клиента <span class="required">*</span><input autocomplete="name" id="clientName" name="clientName" placeholder="Имя клиента" required=""/></label>
+<label class="field age-field">Возраст<input id="age" inputmode="numeric" max="120" min="1" name="age" type="number" value="31"/></label>
+</div>
+<div class="client-row street-row">
+<label class="field">Населённый пункт<input autocomplete="address-level3" id="settlement" name="settlement" placeholder="Нас. пункт"/></label>
+<label class="field">Улица <span class="required">*</span><input autocomplete="address-line1" id="street" name="street" placeholder="Улица" required=""/></label>
+<label class="field">Дом <span class="required">*</span><input autocomplete="address-line2" id="house" name="house" placeholder="Дом" required=""/></label>
+</div>
+<div class="client-row address-details-row">
+<label class="field">Кв. / офис<input id="apartment" name="apartment" placeholder="Квартира"/></label>
+<label class="field">Подъезд<input id="entrance" name="entrance" placeholder="Подъезд"/></label>
+<label class="field">Этаж<input id="floor" name="floor" placeholder="Этаж"/></label>
+<div class="field binary-field"><span>Домофон</span><div class="binary-choices" role="group" aria-label="Домофон"><button type="button" data-intercom="0">Нет</button><button type="button" data-intercom="1">Да</button></div><select class="binary-native-select" id="intercom" name="intercom" required><option value="">Выберите</option><option value="0">Нет</option><option value="1">Есть</option></select></div>
+</div>
+<div class="kp-only-row binary-field" hidden="" id="kp-only-row"><span>Дальний выезд</span><div class="binary-choices" role="group" aria-label="Дальний выезд"><button aria-pressed="false" data-flag="farRide" data-value="0" type="button">Нет</button><button aria-pressed="false" data-flag="farRide" data-value="1" type="button">Да</button></div></div>
+
+<button aria-controls="map-panel" aria-expanded="false" class="map-toggle" id="map-toggle" type="button">⌖ Проверить адрес на Яндекс Картах <span class="map-state" id="map-state">Адрес не подтверждён</span></button>
+<section aria-label="Яндекс Карты" class="map-panel" hidden="" id="map-panel"><div class="map-search"><input aria-label="Поиск адреса" id="address-query" placeholder="Город, улица, дом" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="address-results" aria-expanded="false"/><button class="button secondary" id="address-search" type="button">Найти</button></div><div class="address-results" id="address-results" role="listbox" aria-label="Адреса Яндекс Карт"></div><div class="map-viewport"><iframe hidden="" id="yandex-map" loading="eager" referrerpolicy="no-referrer" title="Яндекс Карты: проверка адреса"></iframe><div class="map-status-row"><span id="map-distance" class="branch-distance" hidden role="status" aria-live="polite"></span><span id="map-territory" class="territory-badge" data-state="unknown" role="status">Выберите дом</span></div></div><a hidden="" id="map-external" rel="noopener noreferrer" target="_blank">Открыть в Яндекс Картах ↗</a><p class="field-help" id="map-help"></p></section>
+</section>
+<div class="middle-row">
+<section class="form-section reference-card parameter-card">
+<div class="section-heading reference-heading"><span class="reference-icon">♜</span><h2>Тип и параметры</h2></div>
+<div class="field base-controls"><span>БАЗА</span><div class="segmented-group"><button class="seg-option base-option" data-base="kp" type="button">КП</button><button class="seg-option base-option" data-base="mnc" type="button">МНЧ</button><button class="seg-option base-option" data-base="bt" type="button">БТ</button><span id="base-choice-help" class="base-choice-help" hidden role="status">Выберите базу</span></div><select class="base-select" id="base" name="base" required=""><option value="">Выберите базу</option><option value="kp">КП</option><option value="mnc">МНЧ</option><option value="bt">БТ</option></select></div>
+<div class="field type-controls"><span>ТИП ЗАЯВКИ</span><div class="segmented-group"><button class="seg-option type-option" data-type="first" type="button">Впервые</button><button class="seg-option type-option" data-type="repeat" type="button">Повтор</button><button class="seg-option type-option" data-type="warranty" type="button">Гарантия</button></div></div>
+<label class="field type-select-legacy">Тип заявки<select id="requestType" name="requestType"><option value="first">Впервые</option><option value="repeat">Повтор</option><option value="warranty">Гарантия</option></select></label>
+<div class="work-row">
+<label class="field"><span id="work-label">Вид работ</span><select id="workId" name="workId"><option value="">Выберите вид работ</option></select></label>
+<label class="field"><span id="service-label">Вид услуг</span><select id="serviceId" name="serviceId"><option value="">Выберите вид услуг</option></select></label>
+<div class="field partner-mini"><a class="card-link ad-avito-link" hidden id="ad-avito-link" rel="noopener noreferrer" target="_blank">Открыть на Авито →</a><span>Партнёр</span><div aria-live="polite" class="auto-source-info" id="auto-source-info" role="status"><span id="auto-partner">—</span><span class="sr-only" id="auto-source"></span><a hidden="" id="auto-source-link" rel="noopener noreferrer" target="_blank"></a></div></div>
+</div>
+<p class="field-help" id="services-help" role="status" aria-live="polite">Работы и услуги загружаются из выбранной базы CRM.</p>
+<div class="call-options-row" role="group" aria-label="Настройки прозвона">
+<button aria-pressed="false" class="flag-option call-before-option" data-flag="callBeforeVisit" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16.4v3a2 2 0 0 1-2.2 2A18 18 0 0 1 3 5.2 2 2 0 0 1 5 3h3l2 5-2.3 1.8a14 14 0 0 0 6.5 6.5L16 14z"/><path d="M15 3a6 6 0 0 1 6 6M15 7a2 2 0 0 1 2 2"/></svg><span>Прозвон перед выездом</span></button>
+<button aria-checked="false" aria-label="Срочная" class="call-check-switch" data-flag="urgent" role="switch" type="button"><span class="call-check-switch-label">Срочная</span><span aria-hidden="true" class="call-check-switch-track"><span class="call-check-switch-knob"></span></span></button>
+<button aria-checked="false" aria-label="Закреп" class="call-check-switch" data-flag="zakrep" role="switch" type="button"><span class="call-check-switch-label">Закреп</span><span aria-hidden="true" class="call-check-switch-track"><span class="call-check-switch-knob"></span></span></button>
+<button aria-checked="false" aria-label="Прозвон" class="call-check-switch" data-flag="callCheck" role="switch" type="button" title="Статус прозвона из CRM"><span class="call-check-switch-label">Прозвон</span><span aria-hidden="true" class="call-check-switch-track"><span class="call-check-switch-knob"></span></span></button>
+</div>
+<details class="extra-settings" hidden><summary>Другие поля CRM</summary><div class="extra-fields" id="extra-fields"></div></details><div class="source-controls" hidden><input type="checkbox" id="source-override" hidden disabled/><div class="two-columns" hidden id="partner-fields"><label class="field">Партнёр<select id="partnerId" name="partnerId"><option value="">Выберите партнёра</option></select></label><label class="field">Источник<select id="source-choice"><option value="">Выберите источник</option></select></label></div><input id="partnerComment" name="partnerComment" type="hidden"/></div>
+<p class="field-help" id="source-help"></p>
+</section>
+<section class="form-section reference-card time-card">
+<div class="section-heading reference-heading"><span class="reference-icon">◷</span><h2>Время заявки</h2></div>
+<div class="dual-clock">
+<div class="clock-half"><span class="clock-caption" id="city-clock-label">Время города</span><div class="clock-data"><strong id="city-clock">—</strong><div class="clock-date">Дата <span id="clock-date-city">—</span></div></div></div>
+<div class="clock-half"><span class="clock-caption">Время заявки</span><div class="clock-data"><strong id="clock-visit-time">—</strong><div class="clock-date">Дата <span id="clock-visit-date">—</span></div></div></div>
+</div>
+<div class="time-control-row">
+<button id="plus-one" type="button">+1 час</button><button id="plus-two" type="button">+2 часа</button>
+<label class="field exact-time"><span class="sr-only">Время визита</span><input id="time" lang="ru-RU" name="time" required="" type="text" readonly="" placeholder="Время" aria-haspopup="listbox" aria-expanded="false" aria-controls="time-grid"/></label>
+<label class="field visit-date"><span class="sr-only">Дата визита</span><input id="date" lang="ru-RU" name="date" required="" type="date"/></label>
+<button aria-expanded="false" class="button secondary" id="time-slots-toggle" hidden tabindex="-1" aria-hidden="true" type="button">⌄</button>
+</div>
+<div aria-label="Время визита с 09:00 до 22:30" class="time-grid" hidden="" id="time-grid" role="group"></div>
+<p class="city-notice" id="city-notice" role="note" hidden></p>
+<label class="field edit-time-reason" hidden="" id="edit-time-reason-label"><span>Причина переноса</span><select id="edit-time-reason"><option value="">Кто переносит?</option><option>Клиент</option><option>Диспетчер</option><option>Директор</option></select></label>
+<input aria-label="Шкала времени визита" aria-valuetext="12:00" class="time-scale" id="time-scale" max="1350" min="540" step="30" type="range" value="720"/>
+<div aria-hidden="true" class="time-ticks"><span>09:00</span><span>12:00</span><span>15:00</span><span>18:00</span><span>22:30</span></div>
+
+</section>
+</div>
+<section class="form-section reference-card comments-section">
+<div class="section-heading reference-heading"><span class="reference-icon">▤</span><h2>Комментарии</h2></div>
+<div class="comment-speech-row" hidden><label class="field">Озвучка цены<select disabled="" id="speechPrice"><option value="">CRM не вернула список</option></select></label></div>
+<div class="price-history-row"><div class="price-status-with-button"><label class="field price-status-field" id="price-status-label" hidden>Статус цены для клиента<select id="price-status" disabled></select></label><button class="button secondary price-open" id="price-open" type="button" aria-haspopup="dialog" hidden>₽ Прайс</button></div><section id="visit-history" class="visit-history" hidden aria-label="История переносов"><span class="visit-history-title">Переносы</span><textarea id="visitHistory" rows="2" aria-label="Переносы" spellcheck="false" hidden></textarea><div id="visit-history-list" class="visit-history-list" role="list" tabindex="0" aria-label="Сохранённые переносы заявки"></div></section></div>
+<label class="field">Комментарий<textarea id="comments" name="comments" placeholder="Описание работ и договорённости" rows="3"></textarea></label>
+<div class="two-columns comment-bottom-row"><label class="field">Служебный комментарий<textarea id="commentsService" name="commentsService" placeholder="Комментарий для КЦ" rows="2"></textarea></label><label class="field" hidden>Комментарий партнёра<textarea disabled="" id="partner-note-preview" placeholder="Источник будет вписан после создания" rows="2"></textarea></label></div>
+</section>
+</fieldset>
+<footer class="panel-footer always-visible-actions" id="create-footer" aria-label="Действия с заявкой"><div class="create-actions-row"><button class="button primary" disabled="" id="create-request" type="submit">Создать заявку в CRM ↗</button><button class="button secondary" disabled id="create-clarification" type="submit">Создать уточнение</button></div><div class="sr-only"><strong id="footer-title">Одна заявка в выбранной базе</strong><span id="footer-help">Результат появится после проверки сохранённой карточки CRM.</span></div></footer>
+</form>
+<div id="record-audit-section" hidden inert aria-hidden="true"><dl id="record-audit"></dl></div>
+<section id="record-history-section" class="record-history-section" hidden aria-label="История заказов клиента"><h2>История заказов клиента</h2><div id="customer-history-count" class="customer-history-count" role="status"></div><div class="customer-history-scroll" role="region" tabindex="0" aria-label="Заявки клиента"><table id="customer-history" class="customer-history"></table></div></section>
+<section id="audio-section" class="audio-section" hidden aria-label="Записи звонков"><button id="audio-toggle" type="button" class="button secondary" aria-expanded="false" aria-controls="audio-panel">Проверить аудио-записи</button><div id="audio-panel" hidden><div id="audio-records" class="audio-records" role="region" aria-live="polite" aria-label="Аудиозаписи звонков" tabindex="0"></div></div></section>
+<section aria-labelledby="created-title" class="created-view" hidden="" id="created-view"><div class="followup-choices" hidden="" id="followup-choices"><strong>Добавить заявку к этому клиенту</strong><p>Имя, телефон и адрес сохранятся из исходной карточки.</p><div class="record-actions"><button class="button secondary" data-followup="repeat" type="button">Повтор</button><button class="button secondary" data-followup="warranty" type="button">Гарантия</button></div></div>
+<div class="created-heading"><span aria-hidden="true" class="success-mark">✓</span><p id="created-state">Сохранено и проверено в CRM</p><h2 id="created-title">Заявка</h2><span class="status-badge" id="record-status"></span></div>
+<div class="record-actions"><a class="button secondary" id="open-crm" rel="noopener noreferrer" target="_blank">Открыть в CRM ↗</a><button class="button secondary" id="copy-number" type="button" hidden>Копировать №</button><button class="button quiet" id="refresh-record" type="button">Обновить</button></div>
+<dl class="record-summary" id="record-summary"></dl>
+<div class="verification" id="record-verification"></div><div aria-live="polite" class="notice" hidden="" id="post-save-state" role="status"></div><div class="notice" hidden="" id="telegram-state"></div>
+<div class="record-edit-actions"><button class="button secondary" id="edit-request" type="button">Редактировать заявку</button><button class="button secondary" id="reschedule-request" type="button">Перенести визит</button></div>
+</section>
+<footer class="panel-footer edit-footer" hidden="" id="edit-footer"><div class="edit-save-row"><button class="button secondary" id="cancel-edit" hidden type="button">Сбросить правки</button><button class="button primary" id="set-waiting" type="button" hidden>Ожидает</button><button class="button primary" id="save-request" type="button">Сохранить</button></div></footer>
+<form class="reschedule-form" hidden="" id="reschedule-form"><h3>Перенести визит</h3><div class="two-columns"><label class="field">Новая дата<input id="reschedule-date" required="" type="date"/></label><label class="field">Новое время<input id="reschedule-time" required="" step="60" type="time"/></label></div><label class="field">Причина переноса<select id="reschedule-reason" required=""><option value="">Выберите причину</option><option>Клиент</option><option>Диспетчер</option><option>Директор</option></select></label><div class="record-actions"><button class="button secondary" id="cancel-reschedule" type="button">Отмена</button><button class="button primary" id="save-reschedule" type="submit">Сохранить перенос</button></div></form>
+
+</main>
+<dialog id="panel-tools-dialog" class="panel-tools-dialog" aria-label="Поиск заявки"><div class="panel-tools-header"><strong>Найти заявку по номеру</strong><button type="button" id="panel-tools-close" class="icon-button" aria-label="Закрыть">×</button></div><form id="panel-tools-form" class="panel-tools-search"><input id="panel-tools-id" inputmode="numeric" placeholder="Номер заявки" aria-label="Номер заявки" autocomplete="off" required><button type="submit" id="panel-tools-search" class="button secondary">Найти</button></form><p id="panel-tools-status" class="panel-tools-status" role="status"></p><a id="panel-tools-crm" hidden target="_blank" rel="noopener noreferrer">Открыть заявку в CRM ↗</a><button type="button" id="panel-tools-copy" class="button secondary panel-tools-copy">Скопировать диагностику</button></dialog>
+<dialog class="visit-reason-dialog" id="visit-reason-dialog" aria-label="Причина переноса"><div class="visit-reason-options"><button type="button" data-visit-reason="Клиент">Клиент</button><button type="button" data-visit-reason="Диспетчер">Диспетчер</button><button type="button" data-visit-reason="Директор">Директор</button></div></dialog>
+<dialog id="price-modal" class="price-modal" aria-label="Прайс выбранной базы"><div class="price-dialog-header"><strong id="price-modal-title">Прайс</strong><button class="icon-button" type="button" id="price-close" aria-label="Закрыть">×</button></div><p id="price-modal-help" class="field-help"></p><div id="price-list" class="price-list"></div></dialog>
+</body>
+</html>
+

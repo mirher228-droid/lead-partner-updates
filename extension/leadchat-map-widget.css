@@ -1,0 +1,12 @@
+/* Keep the real map, exact address marker and legal attribution accessible. */
+html[data-leadpartner-map="compact"] .map-widget-layout-view__controls .layout-control-group,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__search,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__search-results,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__maps-links,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__top-right-controls,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__zoom-controls,
+html[data-leadpartner-map="compact"] .map-widget-layout-view__geolocation,
+html[data-leadpartner-map="compact"] .map-widget-banner-component,
+html[data-leadpartner-map="compact"] .map-widget-content-view__balloon{display:none!important}
+
+html[data-leadpartner-map="compact"],html[data-leadpartner-map="compact"] body{background-color:#202529!important}

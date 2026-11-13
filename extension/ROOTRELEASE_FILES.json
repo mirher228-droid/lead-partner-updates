@@ -1,0 +1,370 @@
+{
+  "schemaVersion": 1,
+  "version": "1.2.50",
+  "files": [
+    {
+      "path": "avito-source-catalog.js",
+      "sha256": "5dbeff2fcbef6b72bb437d7d48c1b6d15c14a49c8b610e203ee35e8214c2f69d"
+    },
+    {
+      "path": "background.js",
+      "sha256": "72fe742d53d89e81fefe1dffcdd44d38070e286375e61714689c004791d155c3"
+    },
+    {
+      "path": "city-combobox.js",
+      "sha256": "fb9914608f101559450d7ad63a51763be3802c836fc49bb760cf951877e4898c"
+    },
+    {
+      "path": "common-ui.css",
+      "sha256": "79058474feacedb331c1ae909d6f4c31faa756f7dfe3c5eded28a0031206690e"
+    },
+    {
+      "path": "crm-audit-quick-actions.js",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "crm-auto-house.js",
+      "sha256": "ff55d89cd0dfb29ec57648557233fc440d71b138a1afe8863d44777f8a031c5e"
+    },
+    {
+      "path": "crm-auto-review.js",
+      "sha256": "7f3fd56eb12f9ce94f080dc71ffeb8ee3044487def92ce12825d02363b63b75d"
+    },
+    {
+      "path": "crm-auto-type-default.js",
+      "sha256": "214f1480db0297d96ee06c1d147219f5b53cb671ca3e11b5923c8426970c1f8d"
+    },
+    {
+      "path": "crm-auto-type.js",
+      "sha256": "9815495e4d8ab13b05b1d6fdb462cabeec0e6bf88f4c25238983313e471e5d87"
+    },
+    {
+      "path": "crm-auto-worktype-kp.js",
+      "sha256": "11590cb57ed3f232b3343723a7becfcd3858cf9f0b9865941bcc33b85a30356f"
+    },
+    {
+      "path": "crm-auto-worktype-mnc.js",
+      "sha256": "557d96e4f02ddd4bed1950027b481a75d49decfef18704d13738f978d2ed6b0f"
+    },
+    {
+      "path": "crm-auto-worktype-universal.js",
+      "sha256": "8680e33dc0e1a14eade3cd9bd0c6edf26ea483d2a1bc3ee47eb25aa277fee471"
+    },
+    {
+      "path": "crm-avito-clock.js",
+      "sha256": "cc513a67b32a104395c830a3fcaf389e074c9020ae8307b5ddfefbbf99f91ce3"
+    },
+    {
+      "path": "crm-avito-core.js",
+      "sha256": "9c3c99a1f47dd8f604193f783c578f11653db37a6d5c809ade4587be6df39feb"
+    },
+    {
+      "path": "crm-avito-owner-sources.js",
+      "sha256": "8f1f4f632f2b84e520090372fd2268beb51abf88e0a1559e883347ecfa403cf2"
+    },
+    {
+      "path": "crm-avito-parser.js",
+      "sha256": "bccbc92492436b446601f5ba392db2bc061d48afe77b9b87c4ffe98fe8bafe18"
+    },
+    {
+      "path": "crm-avito-tools.js",
+      "sha256": "9566b732de8fe0f613dd67b9817a7bbba19ad256320e9b49c0a1ec22ee9fb390"
+    },
+    {
+      "path": "crm-base-navigation.js",
+      "sha256": "8ff474343ac21e3b6edb35214f242c6d1c41348fc4b80a9635c1bc7b4bb81150"
+    },
+    {
+      "path": "crm-base-switcher.js",
+      "sha256": "15372c1d2ab23667e4e1110a0d29889749cf62b5e2a98d3ff3ba9a29bae54a04"
+    },
+    {
+      "path": "crm-bridge.js",
+      "sha256": "0b55a15dc9a5be77817d91e144bf17d98b1cb58d7c5a07da384e63d5ed0a6d6c"
+    },
+    {
+      "path": "crm-call-check-badge.js",
+      "sha256": "4fef32ebc203b2c5d01a17acc9cc37e43f6ed3e5b63525c11eefadab65f2a3e2"
+    },
+    {
+      "path": "crm-comment-paste.js",
+      "sha256": "7cce1552da72e3a562e45a7b273a03b21cda6d3517a53329ae9a198d59721971"
+    },
+    {
+      "path": "crm-copy-transfer.js",
+      "sha256": "78892b2db3826b27eff26aaa8bc7a27a60536918453f3dda65cf5cd9ff2dc249"
+    },
+    {
+      "path": "crm-create-transfer-background.js",
+      "sha256": "49387fa7fffa2777a9873b9cfe4088d6c8a3b6d9caec2c9474ad7382c0fc10a7"
+    },
+    {
+      "path": "crm-create-transfer-bridge.js",
+      "sha256": "4b544e42d37c1dbaade9f4871f6010d2544aaafba729390463e14a8add17ecb1"
+    },
+    {
+      "path": "crm-create-transfer.js",
+      "sha256": "c97c5453a06d71df397416e7cccb56a007d934285895b24ee0c47d9b0baa681c"
+    },
+    {
+      "path": "crm-delay-highlight.js",
+      "sha256": "6eb692d227cb15c2e2a5d6dbd123e4e55daa3671874fcd432ae86f51cd144e33"
+    },
+    {
+      "path": "crm-header-statuses.js",
+      "sha256": "0b4d56a4a9fc76b646abcdae5a0cb3e084864547beae33f17e7cac985c55aa1f"
+    },
+    {
+      "path": "crm-map-button.js",
+      "sha256": "f4487cc9fdf14d22e08975e4b007e85a1e248db5e9b8e6d264674745ffc3f185"
+    },
+    {
+      "path": "crm-page-bootstrap.js",
+      "sha256": "b3b06f7d5d2bb718464264af0a9c0986d664542c46a4feb101b20d11833be8d1"
+    },
+    {
+      "path": "crm-partner-autofill.js",
+      "sha256": "c82a06f138cece21980121526a31cdf7f964abacc95ed4f731c4d57bb8a44f21"
+    },
+    {
+      "path": "crm-phone-copy.js",
+      "sha256": "a968655ed97430502b94d7278cb5e946086fb9d80ed27446939e0172579d61a8"
+    },
+    {
+      "path": "crm-request-time.js",
+      "sha256": "44b598759846a05de6ea5cd4a28913ca3a9c5e858a54d797b2148873e9a3a239"
+    },
+    {
+      "path": "crm-status-badge.js",
+      "sha256": "ae9d436f5fecc73c67bf3d519c1344851db44499fd5d2dd8a2154455d470216b"
+    },
+    {
+      "path": "crm-time-buttons.js",
+      "sha256": "42b629c99605cd4612d57111873b4e25e3af026113f5dd4a3ad246d8d40aadce"
+    },
+    {
+      "path": "crm-transfer-highlight.js",
+      "sha256": "d6d0a64fb99c0ace4b52f6f8f69adeda4aaabeb889e12414a6c13ab775ca32df"
+    },
+    {
+      "path": "crm-userscript-main.js",
+      "sha256": "a933b4d5e08401400b932036985f16deb1ba63ef15d67a7531196d89e6f81b17"
+    },
+    {
+      "path": "employees-client.js",
+      "sha256": "72244143d69be8f36b14948a536240108f8b14eebe1db7658371f16786426ef4"
+    },
+    {
+      "path": "employees-config.js",
+      "sha256": "d1d814e0d4412f00f37ca6d19494ab4710f780566c38621c4194d75e1dc6cd67"
+    },
+    {
+      "path": "icon-128.png",
+      "sha256": "495d396f0fe927a3d7f37400db93a3496c3c253dc726014ccebe933bfaf59144"
+    },
+    {
+      "path": "icon-16.png",
+      "sha256": "5a136de4ce6fad91d28a598ed2c599905068ca896702f341786799a8c7243c99"
+    },
+    {
+      "path": "icon-192.png",
+      "sha256": "0f1f2658173d5bfb57884141066c828a3c00ef98e73a8e8f03dbfe96cb85d920"
+    },
+    {
+      "path": "icon-32.png",
+      "sha256": "1a3f9577ae036e4eb0c3470d4b6f954dd494817ac7e2a07f59809702a3cb9d7b"
+    },
+    {
+      "path": "icon-48.png",
+      "sha256": "d53b84bad793f8b617917993c74aecc7b143bfdee34ea43e037413479f9c9e1b"
+    },
+    {
+      "path": "leadchat-address.js",
+      "sha256": "4f87fb8a2f0b781520a5d1edb6ca23a136c2c7da0725af40d0e7743ae1bfff35"
+    },
+    {
+      "path": "leadchat-comment-worktype.js",
+      "sha256": "0d01678d0f076fce14ac82d6d7f614c8821c35bf5d4a767d4c1de4ea83d3fb07"
+    },
+    {
+      "path": "leadchat-crm-city-catalog.js",
+      "sha256": "a94ee8d038a09018609f24c569ee12a8a25472c89718fccc7545cd2c00f6f395"
+    },
+    {
+      "path": "leadchat-crm-html.js",
+      "sha256": "f5f84f6f4d1653fe5ad36b09e2c370a3d982a4aa712f961cc9958a8e153bbf23"
+    },
+    {
+      "path": "leadchat-crm-service.js",
+      "sha256": "1692dfd6b4c96a557cd7f5944de3159a8c8a77c859e05c148d5436df42eef0d1"
+    },
+    {
+      "path": "leadchat-date-picker.css",
+      "sha256": "685f436fb66ee711e0d3dbf9ccaa5a9cb166faff8217a81d2d58f41b44528ee0"
+    },
+    {
+      "path": "leadchat-date-picker.js",
+      "sha256": "f52544276253332a85b95b6b0e7816e8d2eff130e60c19d81174581d3acca8ea"
+    },
+    {
+      "path": "leadchat-found-request.js",
+      "sha256": "d5b734c35687fc4d09ba9a41bcadaaa41ec33e6a3435addfac7b122ab28d64da"
+    },
+    {
+      "path": "leadchat-map-route.js",
+      "sha256": "b5f3c08d0bb09625e9183a9d01e65b5e17bf4dca2871c3ffd267c58fde7d41c2"
+    },
+    {
+      "path": "leadchat-map-search.js",
+      "sha256": "98bb7a800628db612033855a7184788d2750893e0da8f8fb1d083601a1aa92ca"
+    },
+    {
+      "path": "leadchat-map-widget.css",
+      "sha256": "cc343d46a8064deabe5c81c3dbef5a1a144f2c6fea8c2087954f72d0197ec4b5"
+    },
+    {
+      "path": "leadchat-map-widget.js",
+      "sha256": "bae1cc74ca12d6d7e220f293ea94fb7c41dae7c844940fa2d1d760bd300098ea"
+    },
+    {
+      "path": "leadchat-ozvuchka-data.js",
+      "sha256": "7f1b3d9ce1f568365b153062e9647c527a2c08ad2055860d51b46b5393e727a1"
+    },
+    {
+      "path": "leadchat-panel-tools.js",
+      "sha256": "6fd0653d5625dd183af601d05d309fb0f30c92d646df432046f3c9d87946113b"
+    },
+    {
+      "path": "leadchat-price-quote.js",
+      "sha256": "e737ad7fe760a4e91fdbf3c11daf68cf39c17d7df79cc5785559a3e3226e63b1"
+    },
+    {
+      "path": "leadchat-price-ui.js",
+      "sha256": "a77a2cb024d6aa2a45800053bc98fc766f7bfec8bc0b176f32e6030cdcb1b912"
+    },
+    {
+      "path": "leadchat-request-background.js",
+      "sha256": "5692548653b5112aa4bd28f35961f7cf99afb750ff93116344eee9691b9f4157"
+    },
+    {
+      "path": "leadchat-request-context-main.js",
+      "sha256": "3ae2f794063ea1d15ef2e04e3f15026dbec09ccde49bc8800c52861529b06ec6"
+    },
+    {
+      "path": "leadchat-request-context.js",
+      "sha256": "943f80d6e1817ea0e23eac22f9011507cd4fd30d5670582be1f7fcbee35de572"
+    },
+    {
+      "path": "leadchat-request-controller.js",
+      "sha256": "3b691b5f0e9c2689a06c0c9539cf469a5dd12c9d7a88a665bd91c0a2c3ce54f1"
+    },
+    {
+      "path": "leadchat-request-host.js",
+      "sha256": "428da1262cc7cbde7c3e228bd56dfd7816ff058a608f644d1881f1f284efeca5"
+    },
+    {
+      "path": "leadchat-request-name.js",
+      "sha256": "aebc8c5b66ab9e17d90c9c2c7c70d9c41a45e8379bbb2541da2cc00cd85bbc1e"
+    },
+    {
+      "path": "leadchat-request-panel.css",
+      "sha256": "4cda9f786802f1f1632a53719dd3d82856f8a8279adf6df8e1148dbf10e7d856"
+    },
+    {
+      "path": "leadchat-request-panel.html",
+      "sha256": "8aa68e4491dbc96e1162d1ae6c904cf69f80351321e63c5c4c3a73a1aa1c394b"
+    },
+    {
+      "path": "leadchat-request-panel.js",
+      "sha256": "8da32d3e083b520ff35836054545733d6a5babff96e349f4918c87a4fd90b58c"
+    },
+    {
+      "path": "leadchat-worktype-data.js",
+      "sha256": "3bae446f5776c9d195f261d459d3b6c520cd7346aa10e23562bf5a2c78e5460a"
+    },
+    {
+      "path": "leadpartner-rules.js",
+      "sha256": "f9cc19ab8f8621ab36b3f3b30c37d42051867cb3629a5a43c3b72f600bc34b45"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "28881df397f77f050214076c8e1edde3c06752c2f5f7dbbabdcf3b86980812a8"
+    },
+    {
+      "path": "popup.css",
+      "sha256": "28c1aba7fcdb3cf1eb65e65a0a3e3d39e6484db1eb3056dd649ceed8b6bf0645"
+    },
+    {
+      "path": "popup.html",
+      "sha256": "bf53d122874aff83f4ec606ec6ebf814ad3a79db7794eb0955825e8610a8f169"
+    },
+    {
+      "path": "popup.js",
+      "sha256": "95649a3dc5f3a04e8e88adf74ff3ad8c3e8fc1710e1034ea6b854b97695255f1"
+    },
+    {
+      "path": "README-╨Я╨Ю╨б╨Ы╨Х╨Ф╨Э╨Ш╨Х-╨Ш╨б╨Я╨а╨Р╨Т╨Ы╨Х╨Э╨Ш╨п.txt",
+      "sha256": "c613ebdfa3c0b001d9d77cf8d6bfcde7fa2027f73550fa7372f6a8b047b988cd"
+    },
+    {
+      "path": "README-COMMENT-RULES.txt",
+      "sha256": "66afaa1b535c7885ae4f5c7cdf761168fba52e0a12c132743fccfae56c16f24e"
+    },
+    {
+      "path": "README-MAPS.txt",
+      "sha256": "cbee993907d890dd75ce2313138b1ee77dd77601aef81d07daddd574de7e789d"
+    },
+    {
+      "path": "README-TESTS.txt",
+      "sha256": "29b1920e439552d1ca43f1c6ad2ca4f5923bd48d0e19dcc327ceb254866ffb40"
+    },
+    {
+      "path": "README-UI-UPDATE.txt",
+      "sha256": "2adc7d90233dbe37b79b693bd5edadafbde03752efcec54ee3eca57a1391a17b"
+    },
+    {
+      "path": "README.txt",
+      "sha256": "ca3aef199b693300a78ceca192017b8ca90887985b6c98fe4c15e962346ed542"
+    },
+    {
+      "path": "schedule-name-template.png",
+      "sha256": "d7b9f153e6e4015b8f13bf9ed0570b4eded778a80639c2b6a542457dfbba8542"
+    },
+    {
+      "path": "shared-sources-background.js",
+      "sha256": "d14e48e766028574b53db7e1b3ba71fbb525d94807e48c91fbc44b4b8fd11b74"
+    },
+    {
+      "path": "sources-config.json",
+      "sha256": "ba610b04a09038a669879960c6433b3e4733d273fd64b87c89e2b3b3485f52bd"
+    },
+    {
+      "path": "START-HERE.txt",
+      "sha256": "2adc7d90233dbe37b79b693bd5edadafbde03752efcec54ee3eca57a1391a17b"
+    },
+    {
+      "path": "table-injector.js",
+      "sha256": "0368e977aba95eae3b5390e6f213f8f02eb224bbd13c700b7edafff217796a03"
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.txt",
+      "sha256": "3118609e0a022525ac619daae085a9dc7f2d5eb76bcfd92af8d9d9322aa0bef8"
+    },
+    {
+      "path": "ui-assets/base-bt.svg",
+      "sha256": "b7239390ae8a38d935255f90f4bea3b90a3cd00a0d4811122f5987ee0854b12b"
+    },
+    {
+      "path": "ui-assets/base-kp.svg",
+      "sha256": "74b91a21b9708d7c692c2565a1e12b27cec8b093c64c783d39f16afcebd832cf"
+    },
+    {
+      "path": "ui-assets/base-mnc.svg",
+      "sha256": "66798008e7f6aa079dd963be62d9f75a2a8674da86b982a477eb60e12b061e8f"
+    },
+    {
+      "path": "ui-assets/lead-symbol.svg",
+      "sha256": "935c6fa2bab24f3c2273840adcb1a8a1366f0bce4ac6fe2815196b549f9236d8"
+    }
+  ]
+}

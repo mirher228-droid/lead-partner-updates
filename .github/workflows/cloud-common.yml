@@ -1,0 +1,34 @@
+name: Build Common from editable sources
+on:
+  push:
+    branches: [main]
+    paths: ['extension/**', 'tools/build_common.py', 'tests/test_cloud_build.py', '.github/workflows/cloud-common.yml']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Package regression checks
+        run: python -m unittest discover -s tests -p test_cloud_build.py
+      - name: Build and syntax-check Common
+        run: python tools/build_common.py
+      - name: Validate exact package with stable release policy
+        shell: powershell
+        run: |
+          . ./tools/Release.Common.ps1
+          $version = (Get-Content extension/manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          Test-CommonArchive -ArchivePath "./dist/Lead-Partner-Common-$version.zip" -Version $version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: common-test-build
+          path: dist/Lead-Partner-Common-*.zip
+          retention-days: 14
+
+# Artifacts only: this workflow cannot publish releases or update employee feeds.

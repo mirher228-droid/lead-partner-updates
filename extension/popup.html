@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>тест</title>
+<link rel="stylesheet" href="popup.css">
+<script defer src="leadpartner-rules.js"></script><script defer src="crm-avito-owner-sources.js"></script><script defer src="avito-source-catalog.js"></script><script defer src="popup.js"></script>
+</head><body><header><img src="icon-48.png" width="36" height="36" alt=""><div><h1>тест</h1><p>Панель Авито / LeadChat</p></div></header>
+<p class="hint">Откройте диалог в LeadChat — ваша панель появится справа. Для работы с заявками войдите в КП, МНЧ и БТ в этом же браузере.</p>
+<p class="hint" id="shared-source-status" role="status" aria-live="polite">Проверяем настройку каталога…</p>
+<details id="shared-source-settings"><summary>Настроить общий каталог</summary>
+<form id="shared-source-config"><label for="shared-source-url">Ссылка общего каталога</label><input id="shared-source-url" name="url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec"/><p class="config-help">Вставьте опубликованную ссылку Google Apps Script, полученную от администратора.</p><button id="shared-source-save" type="submit">Сохранить и проверить</button></form>
+</details>
+<button id="shared-source-refresh" type="button" disabled>Обновить источники</button>
+<details><summary>Источники · <span id="source-count">41</span></summary><ul id="source-list"></ul></details>
+</body></html>
