@@ -1,0 +1,31 @@
+name: Inspect Common draft after metadata update
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inspect-common-draft.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - name: Read known draft by immutable release ID only
+        run: gh api "repos/$GH_REPO/releases/445039752" > current-draft.json
+      - name: Show safe metadata fields without mutations
+        shell: python
+        run: |
+          from pathlib import Path
+          import json,hashlib
+          release=json.loads(Path('current-draft.json').read_text())
+          safe={key:release.get(key) for key in ['id','tag_name','target_commitish','draft','prerelease','created_at','updated_at']}
+          safe['author']=release.get('author',{}).get('login')
+          safe['assets']=[{key:asset.get(key) for key in ['id','name','size','digest','updated_at']} for asset in release.get('assets',[])]
+          safe['bodySha256']=hashlib.sha256(release.get('body','').replace('\r\n','\n').strip().encode()).hexdigest()
+          message=json.dumps(safe,separators=(',',':'))
+          escaped=message.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+          print('::warning title=Known draft current state::'+escaped)
