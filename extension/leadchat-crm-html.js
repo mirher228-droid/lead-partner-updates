@@ -238,6 +238,19 @@
         if (typeof DOMParser === 'undefined') throw new Error('Для разбора CRM нужна внутренняя страница расширения.');
         const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
         const page = new URL(url);
+        // A loose option response is different from a whole page containing an
+        // unrelated select. Keep this evidence inert and serializable for the
+        // strict base comparison reader; ordinary form consumers ignore it.
+        const spacing = node => node.nodeType === 8 || node.nodeType === 3 && !node.textContent.trim();
+        const option = node => node.nodeType === 1 && node.tagName === 'OPTION'
+            && Array.from(node.childNodes).every(child => child.nodeType === 3 || child.nodeType === 8);
+        const optionNode = node => option(node) || node.nodeType === 1 && node.tagName === 'OPTGROUP'
+            && Array.from(node.childNodes).every(child => spacing(child) || option(child));
+        const bodyNodes = Array.from(doc.body.childNodes);
+        const optionFragment = bodyNodes.some(optionNode) && bodyNodes.every(node => spacing(node) || optionNode(node))
+            && Array.from(doc.head.childNodes).every(spacing);
+        const standaloneSelects = Array.from(doc.querySelectorAll('select')).filter(element => !element.closest('form'))
+            .map(element => ({name:element.name,tag:'select',disabled:!!element.disabled || element.matches(':disabled'),options:optionList(element)}));
         const scripts = Array.from(doc.querySelectorAll('script')).map(node => node.textContent || '');
         const csrfParam = doc.querySelector('meta[name="csrf-param"]')?.content || '_csrf-frontend';
         const csrfToken = doc.querySelector('meta[name="csrf-token"]')?.content || '';
@@ -447,7 +460,7 @@
             status: clean(statusLabel?.parentElement?.textContent).replace(/^Статус:\s*/, ''),
             author: auditInfo.find(item=>/^(?:Автор|Создал(?:а)?|Кем создан[ао]?)$/iu.test(item.label))?.value || clean(authorLabel?.parentElement?.textContent), sessionOperator, createdAt: clean(createdField?.value || createdRow?.querySelector('td')?.textContent || auditInfo.find(item=>/^(?:Создан[ао]?|Дата создания|Время создания)$/iu.test(item.label))?.value),
             customerId: /^\d+$/.test(customerId) ? customerId : '',
-            nativeComments, commentsSave, commentConflicts, actions, hasClaim, title: clean(doc.title), options: Array.from(doc.querySelectorAll('option')).map(option => ({ id: option.value, text: clean(option.textContent), disabled: !!option.disabled || !!option.parentElement?.disabled })) };
+            nativeComments, commentsSave, commentConflicts, actions, hasClaim, optionFragment, standaloneSelects, title: clean(doc.title), options: Array.from(doc.querySelectorAll('option')).map(option => ({ id: option.value, text: clean(option.textContent), disabled: !!option.disabled || !!option.parentElement?.disabled })) };
     }
     return { parse, parseAudioRecords };
 });

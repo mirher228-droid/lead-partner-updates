@@ -5,13 +5,13 @@
   globalThis.__LP_REQUEST_HOST__ = true;
   const adapter = globalThis.LeadChatRequestContext?.createAdapter();
   if (!adapter) return;
-  let host, slot, shadow, frame, channel, context, activeKey = '', sentSignature = '', opened = false, reading = false, pendingRead = false, awaitingContext = false, contextEpoch = 0;
+  let host, slot, shadow, frame, channel, context, activeKey = '', sentSignature = '', opened = false, reading = false, pendingRead = false, pendingObservedContext = null, awaitingContext = false, contextEpoch = 0;
   let headerRecord=null,geometryFrame=0,geometryRect='';
   const geometryObserver=typeof ResizeObserver==='function'?new ResizeObserver(()=>scheduleGeometry()):null;
   function scheduleGeometry(){
-    if(geometryFrame)return;
+    if(geometryFrame || document.hidden)return;
     geometryFrame=requestAnimationFrame(()=>{
-      geometryFrame=0;if(!opened || !host || !slot?.isConnected)return;
+      geometryFrame=0;if(document.hidden || !opened || !host || !slot?.isConnected)return;
       const r=slot.getBoundingClientRect(),signature=[r.left,r.top,r.width,r.height].join('|');
       if(signature===geometryRect)return;geometryRect=signature;
       for(const [name,value]of [['left',r.left],['top',r.top],['width',r.width],['height',r.height]])host.style.setProperty('--lp-request-'+name,value+'px');
@@ -91,7 +91,7 @@
   function syncRoute() {
     const route = currentRoute();
     if (route === observedRoute) return false;
-    observedRoute = route; context = null; activeKey = ''; sentSignature = '';
+    observedRoute = route; context = null; activeKey = ''; sentSignature = ''; pendingObservedContext = null;
     invalidate();
     if (reading && opened) pendingRead = true;
     return true;
@@ -134,6 +134,7 @@
     if(!opened)document.querySelectorAll('.lp-open-request-header').forEach(button=>{button.hidden=true;button.parentElement?.removeAttribute('data-lp-header-request');});
   }
   function syncHeaderButton() {
+    if(document.hidden)return;
     const header=document.querySelector('.chat-thread-pane > header,.chat-thread-pane .thread-header');
     const info=header?.querySelector('.thread-header__info,.thread-header_info,.thread-headerinfo,[data-lc-dialog-info]') || header;
     if(!info)return;
@@ -184,21 +185,36 @@
     compactSidebarSpace(container);
     return true;
   }
-  function ensureButton() {
+  function ensureButton(observedContext) {
     syncRoute();
     document.querySelectorAll('[data-lp-request-button]').forEach(button => button.remove());
     if (!globalThis.LeadChatRequestContext.currentDialog()) {
       document.querySelectorAll('[data-lp-request-layout]').forEach(node => node.removeAttribute('data-lp-request-layout'));
-      close(); return;
+      close(); return false;
     }
     const created = ensureFrame();
     opened = !!host?.isConnected; visibility();
     syncHeaderButton();
-    if (created) { invalidate(); void refresh(); }
+    if (created) { invalidate(); void refresh(observedContext); }
+    return created;
   }
   async function refresh(observedContext) {
     syncRoute();
-    if (reading) { pendingRead = true; return; }
+    if (reading) {
+      pendingRead = true;
+      if(observedContext){
+        pendingObservedContext = observedContext;
+        contextEpoch++;
+        // A validated notification supersedes the older bridge request. Keep
+        // its latest value and suspend old actions until that read unwinds.
+        if(context?.ok && !awaitingContext){
+          awaitingContext = true; sentSignature = '';
+          frame?.contentWindow?.postMessage({type:'leadchat-request-context-pending',channel,contextKey:activeKey,conversationId:context.conversationId},extensionOrigin);
+          syncHeaderButton();
+        }
+      }
+      return;
+    }
     if (!opened || !observedRoute) return;
     reading = true;
     const epoch = contextEpoch, route = observedRoute;
@@ -236,7 +252,7 @@
         syncHeaderButton();
       } else if (opened) { context = { ok: false, error: next?.error || 'Откройте нужный диалог и дождитесь его загрузки.' }; send(); }
     } catch (_) { syncRoute(); if (opened && epoch === contextEpoch && route === observedRoute) { awaitingContext = false; context = { ok: false, error: 'Не удалось прочитать текущий диалог. Обновите вкладку LeadChat.' }; send(); } }
-    finally { reading = false; if (pendingRead) { pendingRead = false; void refresh(); } }
+    finally { reading = false; if (pendingRead) { pendingRead = false; const observed = pendingObservedContext; pendingObservedContext = null; void refresh(observed); } }
   }
   window.addEventListener('message', event => {
     const message = event.data;
@@ -258,19 +274,19 @@
       void refresh();
     }
   });
-  let scheduled = false;
-  const schedule = () => { if (scheduled) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; const changed = syncRoute(); ensureButton(); if (opened && changed) void refresh(); }); };
+  let scheduled = false, routeChanged = false;
+  const schedule = () => { routeChanged = syncRoute() || routeChanged; if (scheduled || document.hidden) return; scheduled = true; requestAnimationFrame(() => { scheduled = false; if (document.hidden) return; const changed = syncRoute() || routeChanged; routeChanged = false; const created = ensureButton(); if (opened && changed && !created) void refresh(); }); };
   new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
-  adapter.subscribe(value => { reportEmployeeOperator(value); ensureButton(); if (opened) void refresh(value); });
+  adapter.subscribe(value => { reportEmployeeOperator(value); syncRoute(); if(document.hidden){if(opened)void refresh(value);return;} const created = ensureButton(value); if (opened && !created) void refresh(value); });
   if (hasEmployeeIdentity) adapter.subscribeIdentity(value => { if (employeeVisible()) { employeeCandidate = value; sendEmployeeIdentity(); } });
-  window.addEventListener('resize',()=>compactSidebarSpace(slot?.parentElement));
+  window.addEventListener('resize',schedule);
   window.addEventListener('scroll',scheduleGeometry,{capture:true,passive:true});
   const refreshRecord = () => { if (opened && !document.hidden && context?.ok && !awaitingContext) frame?.contentWindow?.postMessage({type:'leadchat-request-refresh',channel,contextKey:key(context)},extensionOrigin); };
   window.addEventListener('focus',()=>{refreshRecord();refreshFocusedEmployee();});
   window.addEventListener('blur',()=>{employeeFocusRevision++;employeeCandidate=null;});
-  document.addEventListener('visibilitychange',()=>{refreshRecord();refreshFocusedEmployee();});
+  document.addEventListener('visibilitychange',()=>{schedule();refreshRecord();refreshFocusedEmployee();});
   window.addEventListener('keydown', event => { if (event.key === 'Escape' && event.isTrusted && opened) close(); });
-  setInterval(() => { ensureButton(); if (opened && !document.hidden) void refresh(); }, 3500);
+  setInterval(() => { if (document.hidden) return; const created = ensureButton(); if (opened && !created) void refresh(); }, 3500);
   ensureButton();
   if (hasEmployeeIdentity) refreshFocusedEmployee();
 })();

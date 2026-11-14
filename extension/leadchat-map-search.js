@@ -96,11 +96,22 @@
     const polygons=geometry?.type==='Polygon'?[geometry.coordinates]:geometry?.type==='MultiPolygon'?geometry.coordinates:[];
     return Array.isArray(polygons)&&polygons.some(rings=>Array.isArray(rings)&&rings.some(ring=>inRing(p,ring)===0));
   }
+  function areaRing(ring){
+    if(!Array.isArray(ring)||ring.length<3||!ring.every(point))return false;
+    const origin=ring[0];let twiceArea=0,extent=0;
+    for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+      const x=ring[i][0]-origin[0],y=ring[i][1]-origin[1],px=ring[j][0]-origin[0],py=ring[j][1]-origin[1];
+      twiceArea+=px*y-x*py;extent=Math.max(extent,Math.abs(x),Math.abs(y));
+    }
+    // Translate first: absolute longitude/latitude products erase tiny valid
+    // areas. Repeated or collinear vertices cannot prove a service boundary.
+    return Math.abs(twiceArea)>Number.EPSILON*extent*extent*ring.length*16;
+  }
   function hasArea(geometry,depth=0){
     if(depth>8)return false;
     if(geometry?.type==='GeometryCollection')return Array.isArray(geometry.geometries)&&geometry.geometries.some(item=>hasArea(item,depth+1))&&geometry.geometries.every(item=>hasArea(item,depth+1)||validNonArea(item,depth+1));
     const polygons=geometry?.type==='Polygon'?[geometry.coordinates]:geometry?.type==='MultiPolygon'?geometry.coordinates:[];
-    return Array.isArray(polygons)&&polygons.length>0&&polygons.every(rings=>Array.isArray(rings)&&rings.length>0&&rings.every(ring=>Array.isArray(ring)&&ring.length>=3&&ring.every(point)));
+    return Array.isArray(polygons)&&polygons.length>0&&polygons.every(rings=>Array.isArray(rings)&&rings.length>0&&rings.every(areaRing));
   }
   function validNonArea(geometry,depth=0){
     if(depth>8)return false;

@@ -37,5 +37,44 @@ class CloudBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Missing manifest resource'):
                 module.build(root, root / 'out')
 
+    def test_missing_embedded_panel_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            (root / 'manifest.json').write_text(json.dumps({'version':'1.2.51',
+                'web_accessible_resources':[{'resources':['panel.html'], 'matches':['https://example.test/*']}]}))
+            with self.assertRaisesRegex(ValueError, 'Missing manifest resource'):
+                module.build(root, root / 'out')
+
+    def test_missing_panel_script_or_stylesheet_is_rejected(self):
+        for html in ('<script src="controller.js"></script>',
+                     '<link rel="stylesheet" href="panel.css">'):
+            with self.subTest(html=html), tempfile.TemporaryDirectory() as folder:
+                root = pathlib.Path(folder)
+                (root / 'manifest.json').write_text('{"version":"1.2.51"}')
+                (root / 'panel.html').write_text(html)
+                with self.assertRaisesRegex(ValueError, 'Missing HTML resource'):
+                    module.build(root, root / 'out')
+
+    def test_missing_static_worker_import_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            (root / 'manifest.json').write_text(json.dumps({'version':'1.2.51',
+                'background':{'service_worker':'background.js'}}))
+            (root / 'background.js').write_text('importScripts("missing-service.js");')
+            with self.assertRaisesRegex(ValueError, 'Missing worker resource'):
+                module.build(root, root / 'out')
+
+    def test_html_resources_resolve_relative_paths_without_treating_links_as_dependencies(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            (root / 'manifest.json').write_text('{"version":"1.2.51"}')
+            (root / 'pages').mkdir()
+            (root / 'pages/panel.html').write_text('<script src="../controller.js?v=1"></script>'
+                '<link rel="stylesheet" href="/panel.css#theme">'
+                '<a href="https://example.test/">CRM</a><img src="data:image/png;base64,AAAA">')
+            (root / 'controller.js').write_text('"use strict";')
+            (root / 'panel.css').write_text('body {}')
+            self.assertTrue(module.build(root, root / 'out').is_file())
+
 if __name__ == '__main__':
     unittest.main()

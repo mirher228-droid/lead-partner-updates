@@ -5,7 +5,7 @@
   if(!seed?.entries?.length||!rules)throw Error('Каталог источников не загрузился.');
   const KEY='leadPartnerSharedCatalogV1',BASES=['kp','mnc','bt'],numeric=value=>typeof value==='string'&&/^\d{1,20}$/u.test(value);
   const latin=code=>code.replace(/[АВСМБ]/g,v=>({А:'A',В:'B',С:'C',М:'M',Б:'B'})[v]);
-  const indexes=new WeakMap(),listeners=new Set();let entries,revision='builtin-2',loaded;
+  const indexes=new WeakMap(),listeners=new Set();let entries,revision='builtin-2',loaded,updates=0;
   const key=rules.sourceKey;
   function list(value){if(value==null)return [];if(!Array.isArray(value)||value.length>200)throw Error('Некорректные данные источника.');return value;}
   function numericBases(entry,id){
@@ -48,7 +48,7 @@
     // Reused numeric IDs are ambiguous lookup keys, not invalid named sources.
     return Object.freeze(out.map(value=>Object.freeze({...value,externalIds:Object.freeze(value.externalIds),externalRefs:Object.freeze(value.externalRefs.map(Object.freeze)),sourceBases:Object.freeze(value.sourceBases),aliases:Object.freeze(value.aliases)})));
   }
-  function setEntries(values,nextRevision){const next=validate(values);revision=String(nextRevision||'local');if(JSON.stringify(next)===JSON.stringify(entries))return false;entries=next;for(const fn of listeners)try{fn(entries)}catch(_){}return true;}
+  function setEntries(values,nextRevision){const next=validate(values);updates++;revision=String(nextRevision||'local');if(JSON.stringify(next)===JSON.stringify(entries))return false;entries=next;for(const fn of listeners)try{fn(entries)}catch(_){}return true;}
   entries=validate(seed.entries);
   function index(catalog,base){
     if(!indexes.has(catalog))indexes.set(catalog,new Map());const cached=indexes.get(catalog),scope=BASES.includes(base)?base:'';if(cached.has(scope))return cached.get(scope);
@@ -77,7 +77,7 @@
     // The remainder must itself be an exact, unambiguous registered alias.
     return sources.get(bare)||null;
   }
-  function ready(){if(!loaded)loaded=(async()=>{if(!globalThis.chrome?.storage?.local)return;try{const value=(await chrome.storage.local.get(KEY))[KEY];if(value?.entries)setEntries(value.entries,value.revision);}catch(_){}})();return loaded;}
+  function ready(){if(!loaded)loaded=(async()=>{if(!globalThis.chrome?.storage?.local)return;try{const before=updates,value=(await chrome.storage.local.get(KEY))[KEY];if(before===updates&&value?.entries)setEntries(value.entries,value.revision);}catch(_){}})();return loaded;}
   const api={get entries(){return entries},get revision(){return revision},key,match,validate,setEntries,ready,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)}};
   globalThis.LeadPartnerSourceCatalog=Object.freeze(api);
   if(globalThis.chrome?.storage?.onChanged){chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&changes[KEY]?.newValue?.entries)try{setEntries(changes[KEY].newValue.entries,changes[KEY].newValue.revision)}catch(_){}});void ready();}

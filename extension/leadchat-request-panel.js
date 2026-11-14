@@ -443,6 +443,7 @@
     let distanceKey='',distanceAbort=null,distanceRevision=0;
     let savedAddressAbort=null,savedAddressPending='',savedAddressReady=null,pinnedTerritoryAbort=null,pinnedTerritoryPending='';
     let portableScope='',portableCommon={},portableChoices=new Map(),baseTransfer=null,contextPending=false;
+    let suspendedContextScope=null;
     let automaticCityChoice=null,automaticLocality='',cityRoutingReady=false;
     const cityRoutingTask=createCityRoutingTask({current:automaticCityRequest,resolve:input=>controller.resolveBranchCity(input),apply:adoptAutomaticCity});
     function sourceHeaderCity(){return text(state.context?.cityName || state.context?.cityLabel || state.context?.city).trim();}
@@ -485,6 +486,28 @@
       return [hostOrigin || text(context.origin),operator,account,id?'id:'+id:'',title].map(encodeURIComponent).join('|');
     }
     function advertChoiceKey(context){const identity=advertIdentity(context);return identity?'leadchat.request.adBaseChoice.v1:'+identity:'';}
+    function baseEvidenceKey(context={}){
+      const source=typeof context.source==='object'?context.source?.code:context.source;
+      const partner=typeof context.partner==='object'?context.partner?.number:context.partner;
+      const candidates=Array.isArray(context.baseCandidates)?context.baseCandidates:[];
+      return JSON.stringify([scopeKey(context,'kp'),context.scope?.key,advertIdentity(context),
+        context.ok!==false,context.allowed!==false,context.routeSafe!==false,text(context.dialogUrl || context.conversationUrl),
+        ...['workTitle','adTitle','serviceTitle','profileFullTitle','profileTitle','profileName','profileComment'].map(name=>text(context[name])),
+        text(context.cityName || context.cityLabel || context.city),candidates,text(context.namedRequestId),!!context.ignoreNamedRequest,
+        phoneInfo(context.phone || context.client?.phone).canonical,text(context.sourceCode || source),text(context.partnerNumber || partner),
+        text(context.base),text(context.baseId)]);
+    }
+    function contextFlagsValid(context){return !!context && context.ok!==false && context.allowed!==false && context.routeSafe!==false;}
+    function automaticBaseTransfer(base){
+      if(state.record || state.operation || state.mode!=='create' || !state.touched.size)return null;
+      const portable=portableDraftForBase(base);
+      portable.transfer={...portable.transfer,automatic:true,touched:[...state.touched]};
+      return portable;
+    }
+    function loadAutomaticBase(context,base,probe={}){
+      const portable=automaticBaseTransfer(base);
+      return loadContext(context,base,null,portable?.draft || null,portable?.transfer || null,probe);
+    }
     function renderBaseReason(){
       const node=$('base-reason');if(!node || !state.draft)return;
       const base=state.draft.base,label=BASE_LABELS[base] || '';
@@ -544,7 +567,7 @@
       for(const button of doc.querySelectorAll('[data-intercom]'))button.disabled=$('intercom').disabled;
     }
     function checkedContext() {
-      return !contextPending && state.context && state.context.ok !== false && scopeKey(state.context, state.draft && state.draft.base) && state.context.routeSafe !== false && state.context.allowed !== false;
+      return !destroyed && !contextPending && state.context && state.context.ok !== false && scopeKey(state.context, state.draft && state.draft.base) && state.context.routeSafe !== false && state.context.allowed !== false;
     }
     function setBusy(value, message) {
       if(contextPending)value=true;
@@ -781,7 +804,7 @@
       } finally { if (writeQueues.get(snapshot.key) === write) writeQueues.delete(snapshot.key); }
     }
     function queueSave() {
-      if (!state.draft || !['create', 'edit'].includes(state.mode) || state.busy && !state.preparing || state.operation) return;
+      if (destroyed || !state.draft || !['create', 'edit'].includes(state.mode) || state.busy && !state.preparing || state.operation) return;
       state.draft = readDraft();
       $('draft-state').textContent = 'Сохраняем…';
       clearTimeout(saveTimer);
@@ -977,12 +1000,16 @@
       const dialog=text(context.dialogUrl || context.conversationUrl).trim();
       return phoneVerified || !!dialog && text(normalized.commentsService).split(/\r?\n/).some(line=>line.trim()===dialog);
     }
-    async function loadContext(context, selectedBase, preloadedRecord, seedDraft=null, transfer=null) {
+    async function loadContext(context, selectedBase, preloadedRecord, seedDraft=null, transfer=null,probe={}) {
+      if(destroyed)return;
+      const retainManualBase=manualBaseChoice && state.context && state.draft?.base===selectedBase && scopeKey(state.context,'kp')===scopeKey(context,'kp') && advertIdentity(state.context)===advertIdentity(context);
       cityRoutingTask.cancel(true);automaticCityChoice=null;automaticLocality='';cityRoutingReady=false;
       renderAdvertisement(context);
       const namedId=!context?.ignoreNamedRequest && /^[1-9]\d{3,11}$/.test(text(context?.namedRequestId))?text(context.namedRequestId):'';
       closeVisitReason(false); datePicker?.close(); cancelAddressSuggestions();clearTimeout(streetSplitTimer);streetSplitTimer=null;clearTimeout(headingOpenTimer);headingOpenTimer=null;
       const generation = ++state.generation;
+      resolvingBaseKey='';
+      let namedLookupAttempted=probe.namedLookupAttempted===true;
       beginCardTransition();
       resetAudio();++historyRevision;historyPending='';historyFingerprint='';openingRecord=0;
       state.preparing = false;
@@ -1011,9 +1038,10 @@
       if(generation!==state.generation)return;
       const semanticBase = win.LeadPartnerRules?.resolveBase(context,context.baseCandidates?.length?context.baseCandidates:undefined);
       baseResolution=semanticBase;
-      manualBaseChoice=!!transfer || BASES.includes(chosenBase?.base) && (!selectedBase || chosenBase.base===selectedBase);
+      manualBaseChoice=retainManualBase || !!transfer && !transfer.automatic || BASES.includes(chosenBase?.base) && (!selectedBase || chosenBase.base===selectedBase);
       const base = BASES.includes(selectedBase) ? selectedBase : BASES.includes(chosenBase?.base)?chosenBase.base:BASES.includes(semanticBase?.base)?semanticBase.base:semanticBase?.requiresManual?'':BASES.includes(context.base)?context.base:BASES.includes(context.baseId)?context.baseId:'';
       state.key = scopeKey(context, base); state.draft = initialDraft(context, base); state.mode = 'create';
+      if(seedDraft && !base){state.draft=editableDraft({...state.draft,...seedDraft,base:''});state.touched=new Set(transfer?.touched || []);}
       const catalog = win.LeadChatCrmCityCatalog, fallbackCities = catalog && (typeof catalog.forBase === 'function' ? catalog.forBase(base) : catalog[base]);
       if (Array.isArray(fallbackCities)) {
         const city = matchCity(fallbackCities, context.cityName || context.cityLabel || context.city);
@@ -1033,8 +1061,7 @@
         notice('Не подтверждён текущий диалог или сотрудник. Закройте панель и откройте её из нужного чата.', true); endCardTransition(); return;
       }
       if (!base) {
-        const candidates = Array.isArray(context.baseCandidates) ? context.baseCandidates : [];
-        resolvingBaseKey = [context.chatId || context.conversationId,context.workTitle,context.cityName || context.city,candidates.join(',')].join('|');
+        resolvingBaseKey = baseEvidenceKey(context);
         setBusy(false); $('editable-fields').disabled=false; $('base').disabled=false; renderMode();if(!namedId)endCardTransition();
       }
       // An ID already in the client name takes the direct record path. Do not
@@ -1052,6 +1079,7 @@
           if(generation!==state.generation)return;
           const matches=cachedRecords.filter(Boolean);
           if(matches.length===1){await loadContext(context,matches[0].base,{...matches[0],cachedView:true});return;}
+          namedLookupAttempted=true;
           const found=await controller.getRequest({context:{...context,base:''},id:text(context.namedRequestId),base:''});
           if(generation!==state.generation)return;
           if(acceptedResult(found) && BASES.includes(found.record.base) && text(found.record.id)===text(context.namedRequestId)) {
@@ -1065,33 +1093,36 @@
         if(controller && !context.ignoreNamedRequest)try {
           let resolvedBase='';
           if(/^[1-9]\d{3,11}$/.test(text(context.namedRequestId)) && controller.getRequest){
-            const existing=await controller.getRequest({context:{...context,base:''},id:text(context.namedRequestId),base:''});
-            if(acceptedResult(existing) && BASES.includes(existing.record.base) && text(existing.record.id)===text(context.namedRequestId))resolvedBase=existing.record.base;
+            if(!namedLookupAttempted){
+              namedLookupAttempted=true;
+              const existing=await controller.getRequest({context:{...context,base:''},id:text(context.namedRequestId),base:''});
+              if(acceptedResult(existing) && BASES.includes(existing.record.base) && text(existing.record.id)===text(context.namedRequestId))resolvedBase=existing.record.base;
+            }
           } else if(phoneInfo(context.phone).valid && controller.duplicates) {
             const lookup=await controller.duplicates({context:{...context,base:'kp'},phone:phoneInfo(context.phone).full,base:'kp',allBases:true});
             const existing=lookup?.ok!==false && !lookup?.incomplete ? latestMatch(lookup.matches || lookup.found || []) : null;
             if(existing && BASES.includes(existing.base))resolvedBase=existing.base;
           }
           if(generation!==state.generation)return;
-          if(resolvedBase){await loadContext(context,resolvedBase);return;}
+          if(resolvedBase){await loadAutomaticBase(context,resolvedBase,{namedLookupAttempted});return;}
         }catch(_){ /* Ambiguous profiles remain selectable when no verified record was read. */ }
         const candidateBases = Array.isArray(context.baseCandidates) ? context.baseCandidates : [];
-        const resolutionKey = [context.chatId || context.conversationId,context.workTitle,context.cityName || context.city,candidateBases.join(',')].join('|');
+        const resolutionKey = baseEvidenceKey(context);
         if (controller?.resolveBase && !semanticBase?.conflict && candidateBases.length > 1 && text(context.workTitle) && resolutionKey !== failedBaseKey) {
           resolvingBaseKey = resolutionKey;
           setBusy(false,'Проверяем вид работ в ' + candidateBases.map(base=>BASE_LABELS[base]).join(' и ') + '…');
           try {
-            const result = await controller.resolveBase({context:contextFor('kp'),baseCandidates:candidateBases,workTitle:context.workTitle});
+            const result = await controller.resolveBase({context:contextFor('kp'),baseCandidates:candidateBases,workTitle:context.workTitle,...(probe.refresh===true?{refresh:true}:{})});
             if (generation !== state.generation || state.draft?.base) return;
             if (result?.ok && BASES.includes(result.base)) {
               resolvingBaseKey = ''; failedBaseKey = '';
               const next = {...context, autoSelectedBaseReason: result.reason};
-              await loadContext(next,result.base);
+              await loadAutomaticBase(next,result.base,{namedLookupAttempted});
               return;
             }
             notice(result?.reason || 'CRM не подтвердила единственную подходящую базу. Выберите базу вручную.',true);
           } catch (error) {if (generation === state.generation) notice('Проверка вида работ недоступна: ' + errorText(error),true);}
-          finally {if (generation === state.generation) {failedBaseKey=resolutionKey; resolvingBaseKey='';}}
+          finally {if (generation === state.generation) {failedBaseKey=resolutionKey; resolvingBaseKey='';$('retry-load').hidden=false;}}
         }
         setBusy(false); $('editable-fields').disabled = false; $('base').disabled = false;
         renderMode(); // clear the disabled attributes left over from the asynchronous CRM probe
@@ -1100,14 +1131,25 @@
       }
       if (!controller) { setBusy(false); endCardTransition();return; }
       setBusy(true, 'Загружаем форму ' + BASE_LABELS[base] + ' CRM. Дату и время уже можно выбрать.'); updateClock();
-      let initialDuplicate = null;
+      let initialDuplicate = null, restoredOperation = null;
       try {
         // Portable manual switches intentionally replace the destination draft;
         // a disk read cannot contribute any fields to this explicit transfer.
-        let saved = seedDraft?null:await storage.get(state.key);
+        let saved=null;
+        if(!seedDraft){
+          const loadingKey=state.key;
+          // A quick A → B → A switch can return before A's disk write completes.
+          // Restore only after this panel's queued snapshots for A have settled.
+          let queued;
+          while((queued=writeQueues.get(loadingKey))){
+            await queued.catch(()=>{});
+            if(generation!==state.generation)return;
+          }
+          saved=await storage.get(loadingKey);
+        }
         if (generation !== state.generation) return;
         if(saved?.record && (saved.record.verified!==true || saved.record.base!==base || namedId && text(saved.record.id)!==namedId || !namedRecordOwned(saved.record,context)))saved=null;
-        if (saved && saved.version === 1) { state.draft = editableDraft({...initialDraft(context, base), ...saved.draft, base}); state.record = saved.record || null; state.recordOrigin = saved.recordOrigin || ''; state.lookupDraft = editableDraft(saved.lookupDraft) || null; state.skipAutoOpenPhone = saved.skipAutoOpenPhone || ''; state.operation = saved.operation?.state==='awaiting_reason' ? saved.operation : null; state.touched = new Set(saved.touched || []); }
+        if (saved && saved.version === 1) { state.draft = editableDraft({...initialDraft(context, base), ...saved.draft, base}); state.record = saved.record || null; state.recordOrigin = saved.recordOrigin || ''; state.lookupDraft = editableDraft(saved.lookupDraft) || null; state.skipAutoOpenPhone = saved.skipAutoOpenPhone || ''; state.operation = restorableOperation(saved.operation); restoredOperation=state.operation; state.touched = new Set(saved.touched || []); }
         if(seedDraft){state.draft=editableDraft({...initialDraft(context,base),...seedDraft,base});state.record=null;state.recordOrigin='';state.operation=null;state.lookupDraft=null;state.touched=new Set(transfer?.touched || []);}
         if(!state.record && !state.draft.existingRequestId && saved?.draft && !saved.draft.addressEntryPolicy){
           for(const name of ['street','house','apartment','settlement','entrance','floor'])if(!state.touched.has(name))state.draft[name]='';
@@ -1145,12 +1187,14 @@
         // completes, even when it has never had a persisted local draft.
         const visibleRecordBaseline=state.loaded && state.record?.verified===true?{record:structuredCopy(state.record),draft:draftFromRecord(state.record)}:null;
         let metadata = await controller.getMetadata(metadataInput(base, state.record && state.record.id));
-        if(metadataReadRevision!==recordReadRevision || state.operation && state.busy)return;
+        if(metadataReadRevision!==recordReadRevision || state.operation && state.busy && state.operation!==restoredOperation)return;
         if (generation !== state.generation) return;
         if (!metadata || metadata.ok === false) throw new Error(errorText(metadata));
         cityRoutingReady=true;
         const liveDraftAtRefresh=state.loaded?readDraft():null;
-        let durable = null;
+        const operationStatus=typeof controller.getOperationStatus==='function' ? await controller.getOperationStatus({context:contextFor(base),base,kind:state.operation?.kind || (state.record?'update':'create'),id:state.operation?.id || state.record?.id}) : null;
+        if(generation!==state.generation)return;
+        let durable=operationStatus?.ok===true?operationStatus.operation:null;
         if (durable && durable.state === 'ready' && durable.cycleId && (state.record || state.operation && state.operation.kind === 'create') && (!state.operation || state.operation.kind === 'create') && durable.cycleId !== state.draft.creationCycleId) {
           state.record = null; state.recordOrigin = ''; state.lookupDraft = null; state.operation = null; state.touched = new Set();
           state.draft = {...initialDraft(context, base), creationCycleId: durable.cycleId, needsDefaults: true};
@@ -1175,11 +1219,12 @@
           state.record = normalizeRecord({...current.record, id: current.record.id ?? current.id, verified: true,
             ...(durable.result.fieldDifferences?.length ? {fieldDifferences:durable.result.fieldDifferences} : {})}, metadata); state.operation = null;
         } else if (durable && !acceptedResult(durable.result) && !['ready', 'rejected', 'not_sent', 'not_created'].includes(durable.result && durable.result.state || durable.state)) {
-          state.operation = {operationId: durable.operationId, kind: durable.kind || 'create', id: durable.recordId || durable.id || '', state: durable.state || 'uncertain', candidates: durable.result && durable.result.candidates || []};
+          state.operation = {...(state.operation?.operationId===durable.operationId?state.operation:{}),...durable.result,operationId:durable.operationId,kind:durable.kind || 'create',id:durable.recordId || durable.id || '',state:durable.state || 'uncertain',candidates:durable.result?.candidates || []};
         }
         if (durable && durable.cycleId) state.draft.creationCycleId = durable.cycleId;
-        // A journal from an older version cannot lock a later deliberate edit.
-        if(state.operation?.state!=='awaiting_reason')state.operation=null;
+        // Keep an unresolved write bound to its original operation across reloads.
+        // A new key cannot prove that the earlier server write did not happen.
+        restoredOperation=state.operation;
         if ((!saved || state.draft.needsDefaults) && metadata.defaults) {
           for (const name of DRAFT_FIELDS) if (name !== 'base' && (state.draft[name] === '' || state.draft[name] === undefined) && metadata.defaults[name] !== undefined) state.draft[name] = metadata.defaults[name];
           state.draft.comments = appendUniqueLines(state.draft.comments, [metadata.defaults.comments]);
@@ -1207,7 +1252,7 @@
         if (state.record && state.record.id && state.record.verified === true) {
           const previousRecord=visibleRecordBaseline?.record || saved?.record,localDraft=liveDraftAtRefresh || saved?.draft;
           const sameRecord=previousRecord?.verified===true && text(previousRecord.id)===text(state.record.id) && previousRecord.base===state.record.base && /^\d+$/.test(text(state.record.customerId)) && text(previousRecord.customerId)===text(state.record.customerId);
-          const restoredDraft = sameRecord && localDraft && !state.operation ? mergeRefreshedDraft(visibleRecordBaseline?.draft || draftFromRecord(previousRecord),localDraft,draftFromRecord(state.record)) : null;
+          const restoredDraft = sameRecord && localDraft ? mergeRefreshedDraft(visibleRecordBaseline?.draft || draftFromRecord(previousRecord),localDraft,draftFromRecord(state.record)) : null;
           state.draft = draftFromRecord(state.record); state.mode = 'created'; renderRecord();
           if (restoredDraft) { restoredDraft.extraPhoneExpanded=false;state.draft = restoredDraft; writeDraft(restoredDraft); $('edit-time-reason').value = restoredDraft.reason || ''; }
           notice('');
@@ -1228,7 +1273,7 @@
         } else notice('Форма CRM не готова. Создание недоступно.', true);
         $('retry-load').hidden = true;
       } }
-      finally { if (generation === state.generation) { state.preparing = false; setBusy(state.operation || openingRecord?state.busy:false); endCardTransition();renderMode(); updateClock(); if (state.loaded && state.dependenciesChangedDuringLoad) { state.dependenciesChangedDuringLoad = false; dependencies(); } } }
+      finally { if (generation === state.generation) { state.preparing = false; setBusy(state.operation && state.operation!==restoredOperation || openingRecord?state.busy:false); endCardTransition();renderMode();showRecovery(); updateClock(); if (state.loaded && state.dependenciesChangedDuringLoad) { state.dependenciesChangedDuringLoad = false; dependencies(); } } }
       if (generation === state.generation && state.autoReloadRequested && !state.record && !state.operation && state.mode === 'create') { await loadContext(state.context, state.draft.base); return; }
       // A previous version may have left a confirmed new record ID in an
       // uncertain journal after a comment-save or read error. One GET-only
@@ -1241,7 +1286,7 @@
         await recover(undefined, true);
       }
       if (generation === state.generation && state.operation?.state === 'awaiting_reason' && ['cancel_kc','cancel_branch','not_taken'].includes(state.operation.action)) await resumeAutomaticCancellation();
-      if (generation === state.generation && !state.record && !state.operation && state.context.namedRequestId && !state.context.ignoreNamedRequest && !state.draft?.existingRequestId) await openNamedRequest();
+      if (generation === state.generation && !namedLookupAttempted && !state.record && !state.operation && state.context.namedRequestId && !state.context.ignoreNamedRequest && !state.draft?.existingRequestId) await openNamedRequest();
       if(generation===state.generation && state.record && !state.operation && (!preloadedRecord || preloadedRecord.cachedView===true)) void refreshRecord({quiet:true});
       // Verified records use the same native editor as new requests.
     }
@@ -1340,8 +1385,8 @@
       try {
         const result = await method({context:snapshot.context,base:snapshot.previousRecord.base,id:operation.id,action:operation.action,operationId:operation.operationId,expectedRevision:snapshot.previousRecord.revision});
         await applyResult(result,snapshot);
-      } catch (error) { if (snapshot.generation === state.generation) { state.operation=null; void persist().catch(()=>{}); showRecovery(); showError(errorText(error)); } }
-      finally { if(snapshot.generation === state.generation) { setBusy(false); renderMode(); } }
+      } catch (error) { await applyResult({ok:false,state:'uncertain',writeStarted:true,error:errorText(error)},snapshot); }
+      finally { if(snapshot.generation === state.generation) { setBusy(false); renderMode();showRecovery(); } }
     }
     async function prepareCancellation(event, action) {
       if (!event.isTrusted || state.busy || state.operation || !state.record || !nativeAction(action) || recordLocked() && action!=='not_taken' || !checkedContext()) return;
@@ -1355,8 +1400,8 @@
         const result = await method({context:snapshot.context,base:snapshot.previousRecord.base,id:operation.id,action,operationId:operation.operationId,expectedRevision:snapshot.previousRecord.revision});
         await applyResult(result,snapshot);
       } catch (error) {
-        if (snapshot.generation === state.generation) { state.operation=null;void persist().catch(()=>{}); showRecovery(); showError(errorText(error)); }
-      } finally { if (snapshot.generation === state.generation) { setBusy(false); renderMode(); } }
+        await applyResult({ok:false,state:dispatched?'uncertain':'rejected',writeStarted:dispatched,safeToRetry:!dispatched,error:errorText(error)},snapshot);
+      } finally { if (snapshot.generation === state.generation) { setBusy(false); renderMode();showRecovery(); } }
     }
     const FLAG_NAMES = Object.freeze({farRide: 'CustomerRequest[is_far_ride]', callBeforeVisit: 'CustomerRequest[is_need_call_before_visit]', callCheck: 'CustomerRequest[is_need_call_check]', urgent: 'CustomerRequest[is_urgent]', zakrep: 'CustomerRequest[is_zakrep]', feedback: 'CustomerRequest[is_req_fback]'});
     const FLAG_HINTS = Object.freeze({farRide: /дальн.{0,18}выезд|is_far_ride/i, callBeforeVisit: /прозвон.{0,20}перед|перед.{0,18}выезд|is_need_call_before_visit/i, callCheck: /^(?!.*перед).*прозвон|is_need_call_check/i, urgent: /срочн|is_urgent/i, zakrep: /закреп|is_zakrep/i, feedback: /отзыв|review|fback/i});
@@ -1877,9 +1922,32 @@
         void recover(undefined, true);
       }, delay);
     }
+    function restorableOperation(operation) {
+      if(!operation || !/^[a-zA-Z0-9_-]{8,160}$/.test(text(operation.operationId)) || !['create','update','reschedule'].includes(operation.kind)
+        || ['saved','rejected','not_sent','not_created','ready'].includes(operation.state))return null;
+      return {...operation,state:operation.state==='awaiting_reason'?'awaiting_reason':'uncertain'};
+    }
+    function needsRecovery(result) {
+      return result?.state==='uncertain' || result?.writeStarted===true && result.safeToRetry!==true
+        || !['rejected','not_sent','not_created'].includes(result?.state);
+    }
+    async function operationFromStatus(snapshot, expectedId) {
+      if(typeof controller?.getOperationStatus!=='function')return null;
+      try {
+        const known=await controller.getOperationStatus({context:snapshot.context,base:snapshot.draft.base,kind:snapshot.kind,id:snapshot.previousRecord?.id || snapshot.operation.id});
+        const operation=known?.ok===true?known.operation:null,kind=snapshot.kind==='reschedule'?'update':snapshot.kind;
+        if(operation?.operationId!==expectedId || !/^[a-zA-Z0-9_-]{8,160}$/.test(text(expectedId)) || (operation.kind==='reschedule'?'update':operation.kind)!==kind
+          || kind==='update' && text(operation.recordId || operation.id)!==text(snapshot.previousRecord?.id || snapshot.operation.id))return null;
+        return {...snapshot.operation,...operation,id:operation.recordId || operation.id || snapshot.operation.id,state:operation.state || 'uncertain'};
+      }catch(_){return null;}
+    }
     function showRecovery() {
-      $('recovery').hidden=true;$('recovery-text').textContent='';$('check-result').hidden=true;
-      if(state.operation?.state==='awaiting_reason')renderCancellation();
+      const operation=state.operation, awaitingReason=operation?.state==='awaiting_reason';
+      $('recovery').hidden=!operation || awaitingReason;
+      $('recovery-text').textContent=operation && !awaitingReason?'Результат сохранения пока не подтверждён. Повторная отправка отключена. Проверьте результат в CRM.':'';
+      $('check-result').hidden=!operation || awaitingReason;
+      $('check-result').disabled=state.busy || recoveryInFlight;
+      if(awaitingReason)renderCancellation();
     }
     function nativeHistoryUrl(row){
       try{const url=new URL(row.url),origin='https://'+row.base+'-lead-centre.ru';return url.origin===origin && !url.username && !url.password && !url.hash && ['/admin/domain/customer-request/update','/admin/domain/customer-request/view'].includes(url.pathname) && url.searchParams.getAll('id').length===1 && url.searchParams.get('id')===text(row.id) && [...url.searchParams.keys()].every(key=>key==='id');}catch(_){return false;}
@@ -2058,7 +2126,7 @@
         if (current()) { state.operation = operation; $('recovery').hidden = true; showError(result.ok === false ? errorText(result.error || 'Выберите причину отмены.') : ''); notice(''); renderCancellation(); }
         return;
       }
-      if (acceptedResult(result) && (snapshot.kind !== 'create' && text(result.record.id ?? result.id) !== text(snapshot.previousRecord && snapshot.previousRecord.id) || result.record.base && result.record.base !== snapshot.draft.base)) result = {...result, ok: false, verified: false, state: 'uncertain', error: 'CRM вернула другую карточку. Изменения этой заявки не подтверждены.'};
+      if (acceptedResult(result) && (snapshot.kind !== 'create' && text(result.record.id ?? result.id) !== text(snapshot.previousRecord?.id || snapshot.operation.id) || result.record.base && result.record.base !== snapshot.draft.base)) result = {...result, ok: false, verified: false, state: 'uncertain', error: 'CRM вернула другую карточку. Изменения этой заявки не подтверждены.'};
       if (acceptedResult(result)) {
         completedOperations.add(snapshot.operation.operationId);
         const postSave = result.postSave || result.record.postSave || snapshot.previousRecord && snapshot.previousRecord.postSave;
@@ -2087,6 +2155,26 @@
         post(snapshot.kind === 'create' ? 'leadchat-request-created' : 'leadchat-request-updated', {context: snapshot.context, record});
         return;
       }
+      // A fresh CRM read can prove that this exact edit was not applied.
+      // Only that bound proof permits a deliberate retry under a new operation.
+      const unappliedEdit=snapshot.kind!=='create' && result?.state==='rejected' && result.code==='edit_not_applied'
+        && result.retryable===true && result.retryDraft && result.record?.base===snapshot.draft.base
+        && text(result.record?.id)===text(snapshot.previousRecord?.id || snapshot.operation.id)
+        && result.operationId===snapshot.operation.operationId;
+      if(unappliedEdit)result={...result,safeToRetry:true};
+      if(needsRecovery(result)) {
+        let operation={...snapshot.operation,state:'uncertain',...(snapshot.kind==='create' && /^[1-9]\d*$/.test(text(result?.id))?{id:text(result.id)}:{}),...(Array.isArray(result?.candidates)?{candidates:structuredCopy(result.candidates)}:{})};
+        if(result?.operationId && result.operationId!==operation.operationId) {
+          const known=await operationFromStatus(snapshot,result.operationId);
+          if(known){
+            if(acceptedResult(known.result))return applyResult(known.result,{...snapshot,operation:known});
+            operation=restorableOperation(known) || {...operation,blockedOperationId:result.operationId};
+          }else operation.blockedOperationId=text(result.operationId);
+        }
+        if(current()){state.operation=operation;showRecovery();showError(errorText(result?.error || 'Результат сохранения пока не подтверждён. Повторная отправка отключена.'));}
+        await persist({key:snapshot.key,draft:snapshot.draft,record:snapshot.previousRecord,recordOrigin:snapshot.recordOrigin,lookupDraft:snapshot.lookupDraft,skipAutoOpenPhone:snapshot.skipAutoOpenPhone,metadata:snapshot.metadata,operation,touched:snapshot.touched}).catch(error=>{if(current())showError(errorText(error));});
+        return;
+      }
       completedOperations.add(snapshot.operation.operationId);
       if(current()){
         state.operation=null;showRecovery();
@@ -2094,7 +2182,7 @@
           state.record=normalizeRecord({...result.record,verified:true},snapshot.metadata);
           state.recordOrigin=snapshot.recordOrigin;renderRecord();
         }
-        if(result?.code==='edit_not_applied' && result.retryDraft && result.record){
+        if(unappliedEdit){
           state.record=normalizeRecord({...result.record,verified:true},state.metadata);
           state.draft={...snapshot.draft,...result.retryDraft};state.mode='edit';
           renderMetadata({...state.metadata,...state.record});writeDraft(state.draft);renderMode();
@@ -2137,10 +2225,8 @@
         }
         await applyResult(result, snapshot);
       } catch (error) {
-        completedOperations.add(operation.operationId);
-        if(snapshot.generation===state.generation && snapshot.key===state.key){state.operation=null;showRecovery();showError(errorText(error));}
-        void persist({key:snapshot.key,draft:snapshot.draft,record:snapshot.previousRecord,recordOrigin:snapshot.recordOrigin,lookupDraft:snapshot.lookupDraft,skipAutoOpenPhone:snapshot.skipAutoOpenPhone,metadata:snapshot.metadata,operation:null,touched:snapshot.touched}).catch(()=>{});
-      } finally { if (snapshot.generation === state.generation) { setBusy(false); updateClock(); renderMode(); queueSave(); } }
+        await applyResult({ok:false,state:dispatched?'uncertain':'rejected',writeStarted:dispatched,safeToRetry:!dispatched,error:errorText(error)},snapshot);
+      } finally { if (snapshot.generation === state.generation) { setBusy(false); updateClock(); renderMode();showRecovery(); queueSave(); } }
     }
     async function recover(candidateId, quiet = false) {
       if (!state.operation || state.busy || recoveryInFlight || !controller) return;
@@ -2151,6 +2237,15 @@
       showError('');
       try {
         let result;
+        if(operation.blockedOperationId){
+          const known=await operationFromStatus(snapshot,operation.blockedOperationId);
+          if(!known)throw Error('Не удалось подтвердить текущую операцию сохранения. Повторная отправка отключена.');
+          if(acceptedResult(known.result)){await applyResult(known.result,{...snapshot,operation:known});return;}
+          const pending=restorableOperation(known);
+          if(!pending)throw Error('Статус прежней операции требует повторной проверки CRM.');
+          Object.assign(operation,pending);delete operation.blockedOperationId;
+          if(generation===state.generation && snapshot.key===state.key)state.operation=structuredCopy(operation);
+        }
         if (controller.reconcile) result = await controller.reconcile({context: snapshot.context, operationId: operation.operationId, id: operation.id, kind: operation.kind, ...(typeof candidateId === 'string' ? {candidateId} : {})});
         else throw new Error('Проверка сохранённых полей операции CRM недоступна. Повторная отправка остаётся заблокированной.');
         await applyResult(result, snapshot);
@@ -2234,13 +2329,48 @@
           setBusy(!!state.operation || !state.loaded);
         }
       }
+      const incomingValid=contextFlagsValid(context),previousValid=contextFlagsValid(state.context);
+      if(!incomingValid && state.context && (previousValid || suspendedContextScope!==null)){
+        if(previousValid){
+          suspendedContextScope=scopeKey(state.context,'kp');
+          if(state.draft && !state.operation)state.draft=readDraft();
+          if(state.key && state.draft)void persist().catch(()=>{});
+          clearTimeout(saveTimer);
+          ++state.generation;
+        }
+        // Suspend old callbacks without clearing a record, a typed draft or an
+        // operation whose eventual receipt still belongs to its original scope.
+        state.context=scopeKey(context,'kp')===suspendedContextScope
+          ? {...state.context,...structuredCopy(context)}
+          : {...state.context,ok:false,allowed:false,routeSafe:false};
+        resolvingBaseKey='';failedBaseKey='';
+        setBusy(false);$('editable-fields').disabled=true;endCardTransition();return;
+      }
+      if(incomingValid && suspendedContextScope!==null){
+        const sameScope=scopeKey(context,'kp')===suspendedContextScope;suspendedContextScope=null;
+        if(!sameScope){void loadContext(context);return;}
+        if(manualBaseChoice || state.record || state.operation){void loadContext(context,state.draft?.base);return;}
+        const nextBase=win.LeadPartnerRules?.resolveBase(context,context.baseCandidates?.length?context.baseCandidates:undefined)?.base;
+        void loadAutomaticBase(context,BASES.includes(nextBase)?nextBase:'');return;
+      }
       doc.body.classList.remove('route-waiting');
-      const candidateBases = Array.isArray(context.baseCandidates) ? context.baseCandidates : [];
-      const resolutionKey = [context.chatId || context.conversationId,context.workTitle,context.cityName || context.city,candidateBases.join(',')].join('|');
+      const resolutionKey = baseEvidenceKey(context);
       if ((resolvingBaseKey === resolutionKey || failedBaseKey === resolutionKey) && state.draft && !state.draft.base) {
         state.context = {...state.context,...structuredCopy(context)}; renderContextFacts(state.context); return;
       }
-      if (!state.context || !state.draft || !state.key || scopeKey(context, state.draft.base) !== state.key) { doc.body.classList.add('route-waiting');loadContext(context); return; }
+      if (!state.context || !state.draft || !state.key || scopeKey(context, state.draft.base) !== state.key) {
+        const sameScope=state.context && scopeKey(context,'kp')===scopeKey(state.context,'kp');
+        const portable=sameScope && !state.draft?.base?automaticBaseTransfer(''):null;
+        doc.body.classList.add('route-waiting');loadContext(context,undefined,null,portable?.draft || null,portable?.transfer || null);return;
+      }
+      const nextContext={...state.context,...structuredCopy(context)};
+      if(!state.record && !state.operation && !manualBaseChoice && state.mode==='create' && advertIdentity(context)===advertIdentity(state.context) && context.ok!==false && context.allowed!==false && context.routeSafe!==false){
+        const nextBase=win.LeadPartnerRules?.resolveBase(nextContext,nextContext.baseCandidates?.length?nextContext.baseCandidates:undefined)?.base;
+        if(BASES.includes(nextBase) && nextBase!==state.draft.base){
+          const needsNamedRead=!context.ignoreNamedRequest && /^[1-9]\d{3,11}$/.test(text(context.namedRequestId));
+          void loadAutomaticBase(context,needsNamedRead?'':nextBase);return;
+        }
+      }
       if(!state.record && !state.operation && advertIdentity(context)!==advertIdentity(state.context)){void loadContext(context);return;}
       const previousCity=sourceHeaderCity();
       const previousProfile = text(state.context.profileComment), previousMaster = text(state.context.masterComment), previousNamedId = text(state.context.namedRequestId), previousMessages = messageFingerprint(state.context);
@@ -2714,8 +2844,8 @@
         if (snapshot.generation !== state.generation || snapshot.key !== state.key) { await persist({...snapshot, record:snapshot.previousRecord, operation:null}); return; }
         const result=await controller.saveCancellation({context:snapshot.context,base:snapshot.previousRecord.base,id:operation.id,operationId:operation.operationId,reasonId,comment});
         await applyResult(result,snapshot);
-      }catch(error){if(snapshot.generation===state.generation){state.operation=null;void persist().catch(()=>{});showRecovery();showError(errorText(error));}}
-      finally{if(snapshot.generation===state.generation){setBusy(false);renderMode();}}
+      }catch(error){await applyResult({ok:false,state:'uncertain',writeStarted:true,error:errorText(error)},snapshot);}
+      finally{if(snapshot.generation===state.generation){setBusy(false);renderMode();showRecovery();}}
     });
     $('claim-form').addEventListener('submit',async event=>{
       event.preventDefault();
@@ -2730,10 +2860,10 @@
         const result=await controller.createClaim({context:snapshot.context,base:snapshot.previousRecord.base,id:operation.id,operationId:operation.operationId,claimType:$('claim-type').value,comment:$('claim-comment').value});
         await applyResult(result,snapshot);
         if(snapshot.generation===state.generation && acceptedResult(result)){$('claim-form').hidden=true;claimTarget='';notice('Претензия создана.');}
-      }catch(error){if(snapshot.generation===state.generation){state.operation=null;void persist().catch(()=>{});showError(errorText(error));showRecovery();}}
-      finally{if(snapshot.generation===state.generation){$('save-claim').disabled=false;$('cancel-claim').disabled=false;setBusy(false);renderNativeActions();}}
+      }catch(error){await applyResult({ok:false,state:'uncertain',writeStarted:true,error:errorText(error)},snapshot);}
+      finally{if(snapshot.generation===state.generation){$('save-claim').disabled=false;$('cancel-claim').disabled=false;setBusy(false);renderNativeActions();showRecovery();}}
     });
-    $('retry-load').addEventListener('click', () => { if (state.context && !state.busy) loadContext(state.context, state.draft && state.draft.base); });
+    $('retry-load').addEventListener('click', () => { if (state.context && !state.busy) {failedBaseKey='';if(state.draft?.base)loadContext(state.context,state.draft.base);else loadAutomaticBase(state.context,'',{refresh:true});} });
     for(const name of ['entrance','floor'])$(name).addEventListener('blur',()=>{if(!state.draft || $(name).disabled)return;$(name).value=text($(name).value).replace(/[\p{White_Space}\uFEFF]/gu,'');queueSave();});
     $('extra-phone-toggle')?.addEventListener('click',event=>{
       if(!event.isTrusted || !state.draft || !extraPhoneDescriptors().length || $('extra-phone-toggle').disabled)return;
@@ -2773,15 +2903,6 @@
       const sourceCardDraft = {base:previous.base,cityId:previous.cityId,street:previous.street,house:previous.house,apartment:previous.apartment,settlement:previous.settlement,entrance:previous.entrance,floor:previous.floor,intercom:previous.intercom,clientName:previous.clientName,age:previous.age,phone:previous.phone,serviceId:previous.serviceId,workId:previous.workId,comments:appendUniqueLines('',[originalContext.profileComment || originalContext.masterComment]),commentsService:win.LeadPartnerRules.serviceComment('',originalContext.dialogUrl || originalContext.conversationUrl),extraFields:Object.fromEntries(Object.entries(previous.extraFields || {}).filter(([name])=>isAdditionalPhoneField(name))) };
       setBusy(true, 'Готовим новое обращение в этом диалоге…'); showError('');
       try {
-        if (state.recordOrigin === 'lookup') {
-          const preserved = structuredCopy({...initialDraft(originalContext, originalContext.base), ...sourceCardDraft});
-          state.record = null; state.recordOrigin = ''; state.lookupDraft = null; state.mode = 'create'; state.touched = new Set(); state.draft = {...preserved, base: originalContext.base, existingRequestId: recordId, allowDuplicate: true}; state.skipAutoOpenPhone = phoneInfo(state.draft.phone).canonical;
-          void persist().catch(()=>{}); await loadContext(originalContext, originalContext.base, null, structuredCopy(state.draft));
-          if(generation+1!==state.generation || scopeKey(originalContext,originalContext.base)!==state.key || state.record || !state.loaded)return;
-        applyFollowupType(selected,recordId);
-          if (generation + 1 === state.generation) notice('Подготовлена новая карточка с клиентом и адресом заявки №'+recordId+'.');
-          return;
-        }
         if (!controller?.newRequest) throw Error('CRM не поддерживает новый цикл обращения.');
         const result = await controller.newRequest({context: originalContext, id: recordId});
         if (!result?.ok || !text(result.cycleId)) throw Error(result?.error || 'CRM не закрепила новый цикл обращения. Сохранённая карточка оставлена открытой.');
@@ -2895,7 +3016,7 @@
       if(link.id==='record-heading-link' && event.detail!==0){clearTimeout(headingOpenTimer);headingOpenTimer=null;if(event.detail>1)return;const generation=state.generation,id=state.record?.id;headingOpenTimer=win.setTimeout(()=>{headingOpenTimer=null;const selected=win.getSelection();if(generation!==state.generation || id!==state.record?.id || selected && !selected.isCollapsed && (link.contains(selected.anchorNode)||link.contains(selected.focusNode)))return;void open();},550);return;}
       await open();
     });
-    win.addEventListener('message', event => {
+    function receiveHostMessage(event) {
       const data = event.data;
       if (!hostOrigin || !channel || event.source !== win.parent || event.origin !== hostOrigin || !data || data.channel !== channel) return;
       if (data.type === 'leadchat-request-context' && data.context && typeof data.context === 'object') updateContext(data.context);
@@ -2907,10 +3028,12 @@
       if (data.type === 'leadchat-request-refresh' && data.contextKey === [state.context?.scope?.key,state.context?.conversationId || state.context?.chatId,state.context?.client?.id].join('|')) void refreshRecord({quiet:true});
       if(data.type==='leadchat-request-open-current' && state.context){const record=state.record?.verified===true?state.record:navigationRecord?.scope===scopeKey(state.context,'kp')?navigationRecord.record:null;const url=record&&requestCardUrl(record.base,record.id);if(url)void chrome.runtime.sendMessage({type:'LP_REQUEST_OPEN_CRM_UPPER',url}).then(result=>{if(result?.ok===false)showError(result.error || 'Не удалось открыть заявку.');}).catch(error=>showError(errorText(error)));}
       if (data.type === 'leadchat-request-context-invalid') { cityRoutingTask.cancel(true);automaticCityChoice=null;cityRoutingReady=false;renderAdvertisement(null);contextPending=false;beginCardTransition();clearTimeout(saveTimer); stopPostSave(); if (state.key && state.draft) persist().catch(() => {}); ++state.generation; state.context = null; state.loaded = false; resetAudio(); renderRecordDetails(null); cancelAddressSuggestions(); setBusy(false); $('editable-fields').disabled = true; notice('Подключаем текущий диалог…', false); }
-    });
+    }
+    win.addEventListener('message',receiveHostMessage);
     clockTimer = win.setInterval(updateClock, 15000);
     const refreshVisible = () => {
-      if (doc.hidden || state.busy || !state.context) return;
+      if (doc.hidden || state.busy || !contextFlagsValid(state.context)) return;
+      if(!state.draft?.base && [resolvingBaseKey,failedBaseKey].includes(baseEvidenceKey(state.context)))return;
       if (state.operation) { const target=recoveryTarget();recoveryAttempts.delete(target);queueRecovery(); }
       else if (!state.loaded) void loadContext(state.context,state.draft?.base);
       else if (state.dependenciesError && !state.dependenciesPending) void dependencies();
@@ -2919,7 +3042,7 @@
     };
     refreshTimer = win.setInterval(() => { if (!state.operation && state.loaded) void refreshRecord({quiet:true}); }, 5000);
     win.addEventListener('focus', refreshVisible); doc.addEventListener('visibilitychange', refreshVisible);
-    function stopRefresh() { destroyed=true;cityRoutingTask.cancel(true);cityPreloadAbort?.abort();savedAddressAbort?.abort();clearBranchDistance(); clearInterval(refreshTimer); win.removeEventListener('focus',refreshVisible); doc.removeEventListener('visibilitychange',refreshVisible); }
+    function stopRefresh() { if(!destroyed){destroyed=true;++state.generation;++recordReadRevision;}clearTimeout(commentInferenceTimer);commentInferenceTimer=null;win.removeEventListener('message',receiveHostMessage);cityRoutingTask.cancel(true);cityPreloadAbort?.abort();savedAddressAbort?.abort();clearBranchDistance(); clearInterval(refreshTimer); win.removeEventListener('focus',refreshVisible); doc.removeEventListener('visibilitychange',refreshVisible); }
     win.addEventListener('pagehide', () => { cityCombobox?.destroy();closeVisitReason(false);datePicker?.destroy();clearTimeout(headingOpenTimer);clearTimeout(streetSplitTimer);clearTimeout(saveTimer); clearTimeout(phoneTimer); clearTimeout(recoveryTimer);clearTimeout(streetSplitTimer);cancelAddressSuggestions();clearInterval(clockTimer); stopRefresh(); stopPostSave(); if (state.key && state.draft) persist().catch(() => {}); });
     setBusy(false);
     if (!hostOrigin || !channel || win.parent === win) notice('Панель заявки открывается рядом с текущим диалогом LeadChat.', true);

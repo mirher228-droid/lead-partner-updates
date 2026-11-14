@@ -23,7 +23,7 @@
     return /^(?:В\s*работе\s+)?СД(?:$|[\s.,()/])/iu.test(status) ? 'sd' : /^в\s*работе(?:\s|$)/iu.test(status) ? 'zpch' : '';
   }
   const partnerNumberOf = label => {
-    const match = normalize(label).match(/^(?:партнер\s*[:№-]?\s*)?(\d+)(?=$|[^\d])/u);
+    const match = normalize(label).match(/^(?:партнер\s*(?:no\.?|[:№-])?\s*)?(\d+)(?=$|[^\d])/u);
     return match ? match[1].replace(/^0+(?=\d)/, '') : '';
   };
   function canonicalRecord(record) {
@@ -79,26 +79,69 @@
     const storage = config.storage || root.chrome?.storage?.local;
     const mapSearch = config.mapSearch || root.LeadChatMapSearch?.create({fetch:config.fetch});
     const mapRoute = config.mapRoute || root.LeadChatMapRoute?.create({fetch:config.fetch,mapSearch});
+    const writeBindings = new Map();
     const services = new Map(), metadata = new Map(), receipts = new Map(), receiptReadAt = new Map(), postSaveHandoffs = new Map();
     const freshForms = new Set();
     const now = config.now || Date.now, nativeTtl = 30000;
-    const nativeForms = new Map(), nativeReads = new Map(), phoneLookups = new Map(), dependentLists = new Map(), formGenerations = new Map();
+    const nativeForms = new Map(), nativeReads = new Map(), phoneLookups = new Map(), dependentLists = new Map(), baseComparisons = new Map(), formGenerations = new Map();
     const preloadedBindings = new WeakMap();
     const scopeDigests = new Map(), resolvedScopes = new Map(), metadataContexts = new Map(), dependencyRevisions = new Map(), livePreparations = new Set();
-    function sharedResult(cache,key,load,refresh=false,retain) {
+    // Keep recent dialogue preparation in memory; operation journals remain in
+    // storage. Concurrent work may temporarily exceed this idle-scope limit.
+    const maxCachedScopes=Number.isInteger(config.maxCachedScopes) && config.maxCachedScopes>=1 && config.maxCachedScopes<=256 ? config.maxCachedScopes : 64;
+    const contexts=new Map();
+    function touchContext(context,identity=scopeText(context)) {
+      const entry=contexts.get(identity) || {identity,pins:0,scope:''};
+      contexts.delete(identity);contexts.set(identity,entry);return entry;
+    }
+    function pruneContexts() {
+      while(contexts.size>maxCachedScopes){
+        const idle=[...contexts.values()].find(entry=>entry.pins===0);
+        if(!idle)return;
+        contexts.delete(idle.identity);scopeDigests.delete(idle.identity);resolvedScopes.delete(idle.identity);
+        if(!idle.scope)continue;
+        services.delete(idle.scope);
+        for(const cache of [metadata,receipts,receiptReadAt,freshForms,nativeForms,nativeReads,phoneLookups,dependentLists,baseComparisons,formGenerations,metadataContexts,dependencyRevisions,livePreparations,foundLinks])clearScoped(cache,idle.scope);
+      }
+    }
+    function withContext(context,work) {
+      let entry,identity;
+      try{identity=context && scopeText(context);}catch(_){}
+      if(identity){entry=touchContext(context,identity);entry.pins++;pruneContexts();}
+      const release=()=>{
+        if(!entry)return;
+        entry.pins--;contexts.delete(entry.identity);contexts.set(entry.identity,entry);pruneContexts();
+      };
+      try{return Promise.resolve(work()).finally(release);}catch(error){release();return Promise.reject(error);}
+    }
+    const tracked=work=>input=>withContext(input?.context,()=>work(input));
+    function forgetResult(cache,key,entry) {
+      if(cache.get(key)!==entry)return;
+      cache.delete(key);
+      if(cache===nativeForms)livePreparations.delete(key);
+    }
+    function trimResults(cache) {
+      while(cache.size>250){
+        const oldest=[...cache].find(([,entry])=>!entry.pending);
+        if(!oldest)return;
+        forgetResult(cache,oldest[0],oldest[1]);
+      }
+    }
+    function sharedResult(cache,key,load,refresh=false,retain,ttl=nativeTtl) {
       const known=cache.get(key);
-      if(known && (known.pending || !refresh && known.value?.ok && now()-known.at<nativeTtl))return known.promise;
+      if(known && (known.pending || !refresh && known.value?.ok && now()-known.at<ttl))return known.promise;
       const entry={at:now(),pending:true};
       entry.promise=Promise.resolve().then(load).then(value=>{
         entry.pending=false;entry.at=now();entry.value=value;
-        if(!value?.ok || value.incomplete || retain && !retain(value))cache.delete(key);
-        return value;
-      },error=>{cache.delete(key);throw error;});
+        if(!value?.ok || value.incomplete || retain && !retain(value))forgetResult(cache,key,entry);
+        trimResults(cache);return value;
+      },error=>{entry.pending=false;forgetResult(cache,key,entry);trimResults(cache);throw error;});
       cache.set(key,entry);
-      while(cache.size>250) {const oldest=[...cache].find(([,value])=>!value.pending);if(!oldest)break;cache.delete(oldest[0]);}
+      if(cache===nativeForms)livePreparations.delete(key);
+      trimResults(cache);
       return entry.promise;
     }
-    function clearScoped(cache,key) {for(const candidate of cache.keys())if(candidate.startsWith(key+'|'))cache.delete(candidate);}
+    function clearScoped(cache,key) {for(const candidate of cache.keys())if(candidate.startsWith(key+'|')){cache.delete(candidate);if(cache===nativeForms)livePreparations.delete(candidate);}}
     async function currentCatalog() { return rpc({type:'LP_REQUEST_CATALOG'}); }
     function nativeIdentity(handle,recordId,phone) {
       return handle.key+'|'+(formGenerations.get(handle.key)||0)+'|'+(recordId?'record:'+text(recordId):'create:'+phone10(phone));
@@ -107,7 +150,7 @@
       const record=raw?.record;
       if(!raw?.ok || !record || !id(record.id))return;
       const key=nativeIdentity(handle,record.id);
-      nativeForms.set(key,{at,value:raw,pending:false,promise:Promise.resolve(raw)});
+      nativeForms.set(key,{at,value:raw,pending:false,promise:Promise.resolve(raw)});trimResults(nativeForms);
     }
     const serviceModule = config.serviceModule || root.LeadChatCrmService;
     const foundLinks=new Map();
@@ -118,13 +161,13 @@
       if(matches.length!==1)return;
       const recordId=text(matches[0].id),key=handle.scope+'|'+clientId(context)+'|'+base+'|'+recordId+'|'+phone;
       if(foundLinks.has(key))return;
-      const task=rpc({type:'LP_REQUEST_FOUND',command:'append',base,id:recordId,phone,scope:handle.scope,context:{operatorId:text(context.operatorId || context.scope?.operatorId),accountId:text(context.accountId || context.scope?.accountId),clientId:clientId(context),conversationId:text(context.chatId || context.conversationId),conversationUrl:context.dialogUrl || context.conversationUrl}});
+      const task=withContext(context,()=>rpc({type:'LP_REQUEST_FOUND',command:'append',base,id:recordId,phone,scope:handle.scope,context:{operatorId:text(context.operatorId || context.scope?.operatorId),accountId:text(context.accountId || context.scope?.accountId),clientId:clientId(context),conversationId:text(context.chatId || context.conversationId),conversationUrl:context.dialogUrl || context.conversationUrl}}));
       foundLinks.set(key,task);
-      void Promise.resolve(task).then(result=>{if(!result?.ok)foundLinks.delete(key);},()=>foundLinks.delete(key));
+      void Promise.resolve(task).then(result=>{if(!result?.ok && foundLinks.get(key)===task)foundLinks.delete(key);},()=>{if(foundLinks.get(key)===task)foundLinks.delete(key);});
     }
 
     function validate(context, base) {
-      if (!context || context.ok === false || !text(context.chatId || context.conversationId) || !text(context.operatorId || context.scope?.operatorId) || !text(context.accountId || context.scope?.accountId) || !clientId(context)) throw Error('Дождитесь загрузки диалога, клиента и сотрудника LeadChat.');
+      if (!context || context.ok === false || context.allowed === false || context.routeSafe === false || !text(context.chatId || context.conversationId) || !text(context.operatorId || context.scope?.operatorId) || !text(context.accountId || context.scope?.accountId) || !clientId(context)) throw Error('Дождитесь загрузки диалога, клиента и сотрудника LeadChat.');
       if (!BASES.includes(base)) throw Error('Выберите базу КП, МНЧ или БТ.');
       let url;
       try {url = new URL(context.dialogUrl || context.conversationUrl);} catch (_) {}
@@ -140,7 +183,12 @@
         const bytes=new TextEncoder().encode(value),digest=await (config.crypto || root.crypto).subtle.digest('SHA-256',bytes);
         return Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,'0')).join('');
       })());
-      return scopeDigests.get(value);
+      const pending=scopeDigests.get(value);
+      try{
+        const digest=await pending,entry=contexts.get(value);
+        if(entry)entry.scope=digest;
+        return digest;
+      }catch(error){if(scopeDigests.get(value)===pending)scopeDigests.delete(value);throw error;}
     }
     async function serviceFor(context, base) {
       validate(context, base);
@@ -153,48 +201,85 @@
         if (!result || !result.status) throw Error(result?.error || 'CRM не ответила. Проверьте подключение.');
         if (result.bodyReadError && (!input.method || input.method === 'GET')) throw Error(result.error || 'CRM не завершила чтение карточки.');
         return result;
+      }, onBeforeWrite: async input => {
+        const gate=writeBindings.get(key+'|'+input.operationId);
+        if(!gate || gate.base!==input.base || (gate.kind==='create')!==(input.kind==='create') || gate.kind==='update' && gate.recordId!==text(input.id))
+          throw Error('Не подтверждена привязка сохраняемой заявки. Форма не отправлена.');
+        const dispatched=await rpc({...gate,command:'dispatch'});
+        if(!dispatched?.ok)throw Error(dispatched?.error || 'Не удалось закрепить отправку формы.');
+        return dispatched;
       } }));
       return { service: services.get(key), scope: key, key: key + '|' + base + '|' + clientId(context) };
     }
-    async function resolveBase({context, baseCandidates, workTitle}) {
+    async function resolveBase({context, baseCandidates, workTitle, refresh=false}) {
+      if(context?.ok===false || context?.allowed===false || context?.routeSafe===false)return {ok:false,base:'',state:'rejected',error:'Дождитесь загрузки текущего диалога.'};
+      const originalContext=context;
+      context={...context,client:context?.client?{...context.client}:context?.client,scope:context?.scope?{...context.scope}:context?.scope};
       const semantic=root.LeadPartnerRules.resolveBase({...context,workTitle},baseCandidates);
       if(semantic.base || semantic.conflict)return {ok:true,...semantic};
-      // Inspect actual, read-only CRM dropdowns. NEVER guess from the order of
-      // БТ/МНЧ in the header and never auto-select on a partial/outage result.
-      const choices = [...new Set((Array.isArray(baseCandidates) ? baseCandidates : []).filter(base => BASES.includes(base)))];
-      const pieces = text(workTitle).split(/\s+[/|]\s+/).map(normalize).filter(Boolean);
-      if (choices.length < 2 || !pieces.length || !text(context.cityName || context.city)) return {ok:true,base:'',reason:'Недостаточно данных для выбора базы.'};
-      const catalog = root.LeadChatCrmCityCatalog;
-      const checks = await Promise.all(choices.map(async base => {
-        try {
-          const cities = options(typeof catalog?.forBase === 'function' ? catalog.forBase(base) : catalog?.[base]);
-          const city = root.LeadPartnerRules.routeCity(cities,context.cityName || context.city);
-          if (!city) return {base,ok:false,reason:'Город не определён в справочнике ' + base};
-          const handle = await serviceFor(context,base);
-          const available = await handle.service.dependencies({base,cityId:city.id,applianceTypeId:'',partnerId:''});
-          if (!available?.ok) return {base,ok:false,reason:available?.error || 'CRM не ответила'};
-          const workTypes = options(available.workTypes);
-          const matchWork = workTypes.filter(work => pieces.includes(normalize(work.label)));
-          let score = matchWork.length ? 1 : 0, matchingWork = null;
-          if (pieces.length > 1 && matchWork.length) {
-            const extras = await Promise.all(matchWork.slice(0,5).map(async work => {
-              const response = await handle.service.dependencies({base,cityId:city.id,applianceTypeId:work.id,partnerId:''});
-              if (!response?.ok) return {ok:false};
-              const serviceNames = options(response.services).map(service=>normalize(service.label));
-              return {ok:true,pair:pieces.some(piece => piece !== normalize(work.label) && serviceNames.includes(piece)),work};
-            }));
-            if (extras.some(row=>!row.ok)) return {base,ok:false,reason:'Не удалось полностью проверить виды услуг'};
-            const paired = extras.filter(row=>row.pair);
-            if (paired.length === 1) {score=2;matchingWork=paired[0].work;}
-          }
-          return {base,ok:true,score,work:matchingWork || (matchWork.length===1?matchWork[0]:null)};
-        } catch(error) {return {base,ok:false,reason:error?.message||'Ошибка проверки CRM'};}
-      }));
-      if (checks.some(row=>!row.ok)) return {ok:true,base:'',reason:'Одна из баз недоступна для сравнения: ' + checks.filter(row=>!row.ok).map(row=>row.base).join(', '),checks};
-      const highest = Math.max(0,...checks.map(row=>row.score));
-      const winners = checks.filter(row=>row.score===highest && row.score>0);
-      if (winners.length !== 1) return {ok:true,base:'',reason:'По виду работ нельзя однозначно выбрать одну CRM; выберите базу вручную.',checks};
-      return {ok:true,base:winners[0].base,workId:winners[0].work?.id||'',reason:highest===2?'Услуга и вид работ совпали только в выбранной CRM.':'Вид работ найден только в выбранной CRM.',checks};
+      // Only actual CRM work/service lists can resolve a semantic ambiguity.
+      const choices=[...new Set((Array.isArray(baseCandidates)?baseCandidates:[]).filter(base=>BASES.includes(base)))].sort();
+      const title=value=>normalize(value).replace(/\s*[/|]\s*/g,' / ');
+      const fullTitle=title(workTitle),pieces=text(workTitle).split(/\s*[/|]\s*/).map(normalize).filter(Boolean);
+      if(choices.length<2 || !pieces.length || !text(context.cityName || context.city))return {ok:true,base:'',reason:'Недостаточно данных для выбора базы.'};
+      const contextIdentity=value=>JSON.stringify([value?.ok!==false,value?.allowed!==false,value?.routeSafe!==false,scopeText(value || {}),clientId(value || {}),normalize(value?.cityName || value?.city),text(value?.sourceCode || value?.source),text(value?.partnerNumber || value?.partner)]);
+      const initialContext=contextIdentity(context),catalog=root.LeadChatCrmCityCatalog,sourceCatalog=root.LeadPartnerSourceCatalog;
+      const sourceRevision=sourceCatalog?.revision || '',cityRevision=catalog?.revision || '';
+      const listsFor=current=>choices.map(base=>[base,options(typeof current?.forBase==='function'?current.forBase(base):current?.[base])]);
+      const cityLists=new Map(listsFor(catalog));
+      const cityIdentity=lists=>JSON.stringify(lists.map(([base,cities])=>[base,cities.map(city=>[city.id,city.label])]));
+      const initialCities=cityIdentity([...cityLists]);
+      const compare=async()=>{
+        const checks=await Promise.all(choices.map(async base=>{
+          try{
+            const city=root.LeadPartnerRules.routeCity(cityLists.get(base),context.cityName || context.city);
+            if(!city)return {base,ok:false,reason:'Город не определён в справочнике ' + base};
+            const handle=await serviceFor(context,base),args={base,cityId:city.id,partnerId:''};
+            const available=typeof handle.service.readWorkCatalog==='function'
+              ?await handle.service.readWorkCatalog({...args,partnerNumber:text(context.partnerNumber || context.partner)})
+              :await handle.service.dependencies({...args,applianceTypeId:''});
+            if(!available?.ok || available.incomplete)return {base,ok:false,reason:available?.error || 'CRM не ответила'};
+            const workTypes=options(available.workTypes),whole=workTypes.filter(work=>title(work.label)===fullTitle);
+            const matchWork=whole.length?whole:workTypes.filter(work=>pieces.includes(normalize(work.label)));
+            let score=matchWork.length?1:0,matchingWork=null;
+            if(!whole.length && pieces.length>1 && matchWork.length){
+              if(matchWork.length>5)return {base,ok:false,reason:'Слишком много совпадающих видов работ. Уточните услугу и выберите базу вручную.'};
+              const extras=await Promise.all(matchWork.map(async work=>{
+                const response=typeof available.servicesFor==='function'
+                  ?await available.servicesFor(work.id)
+                  :await handle.service.dependencies({...args,applianceTypeId:work.id});
+                if(!response?.ok || response.incomplete)return {ok:false};
+                const serviceNames=options(response.services).map(service=>normalize(service.label));
+                return {ok:true,pair:pieces.some(piece=>piece!==normalize(work.label) && serviceNames.includes(piece)),work};
+              }));
+              if(extras.some(row=>!row.ok))return {base,ok:false,reason:'Не удалось полностью проверить виды услуг'};
+              const paired=extras.filter(row=>row.pair);
+              if(paired.length){score=2;if(paired.length===1)matchingWork=paired[0].work;}
+            }
+            return {base,ok:true,score,work:matchingWork || (matchWork.length===1?matchWork[0]:null),...(whole.length && pieces.length>1?{wholeTitle:true}:{})};
+          }catch(error){return {base,ok:false,reason:error?.message || 'Ошибка проверки CRM'};}
+        }));
+        if(checks.some(row=>!row.ok))return {ok:true,base:'',reason:'Одна из баз недоступна для сравнения: ' + checks.filter(row=>!row.ok).map(row=>row.base).join(', '),checks};
+        const positive=checks.filter(row=>row.score>0);
+        // A slash can belong to one native work title, rather than a pair.
+        // Conflicting native interpretations require the employee's choice.
+        if(positive.length>1 && positive.some(row=>row.wholeTitle))return {ok:true,base:'',reason:'Название найдено в нескольких CRM; выберите базу вручную.',checks};
+        const highest=Math.max(0,...checks.map(row=>row.score)),winners=checks.filter(row=>row.score===highest && row.score>0);
+        if(winners.length!==1)return {ok:true,base:'',reason:'По виду работ нельзя однозначно выбрать одну CRM; выберите базу вручную.',checks};
+        return {ok:true,base:winners[0].base,workId:winners[0].work?.id || '',reason:highest===2?'Услуга и вид работ совпали только в выбранной CRM.':'Вид работ найден только в выбранной CRM.',checks};
+      };
+      let owner;
+      try{owner=await serviceFor(context,choices[0]);}catch(_){return compare();}
+      const generations=()=>choices.map(base=>formGenerations.get(owner.scope+'|'+base+'|'+clientId(context)) || 0);
+      const initialGenerations=JSON.stringify(generations());
+      const key=owner.scope+'|'+clientId(context)+'|'+JSON.stringify([initialContext,choices,fullTitle,pieces,sourceRevision,cityRevision,initialCities,initialGenerations]);
+      const comparison=await sharedResult(baseComparisons,key,compare,refresh,value=>value.checks?.every(row=>row.ok===true),10000);
+      if(contextIdentity(originalContext)!==initialContext || JSON.stringify(generations())!==initialGenerations
+          || root.LeadPartnerSourceCatalog!==sourceCatalog || (sourceCatalog?.revision || '')!==sourceRevision
+          || root.LeadChatCrmCityCatalog!==catalog || (catalog?.revision || '')!==cityRevision || cityIdentity(listsFor(catalog))!==initialCities)
+        return {ok:true,base:'',state:'superseded',reason:'Данные выбора базы изменились. Дождитесь повторной проверки.'};
+      // Callers can annotate their view without changing a cached decision.
+      return JSON.parse(JSON.stringify(comparison));
     }
     const metadataKey = handle => 'leadPartnerRequestMetadataV1:' + handle.key;
     function cacheMetadata(handle, value) {
@@ -214,6 +299,7 @@
       try {validate(context,base);} catch (_) {return null;}
       const resolved=resolvedScopes.get(scopeText(context));
       if(!resolved || recordId)return null;
+      touchContext(context);pruneContexts();
       const handle={key:resolved+'|'+base+'|'+clientId(context)},identity=nativeIdentity(handle,null,draft.phone || context.phone || '');
       const value=metadata.get(handle.key),native=nativeForms.get(identity);
       // Only the current controller's native preparation can back an immediate
@@ -229,7 +315,7 @@
       const catalogTask=currentCatalog();
       const binding=preloadedMetadata && preloadedBindings.get(preloadedMetadata);
       let native;
-      if(!refresh && binding?.key===handle.key && now()-binding.at<nativeTtl
+      if(!refresh && binding?.key===handle.key && binding.service===handle.service && now()-binding.at<nativeTtl
         && text(preloadedMetadata.record?.id || preloadedMetadata.id)===text(recordId)
         && (preloadedMetadata.record?.base || preloadedMetadata.base)===base) {
         native=preloadedMetadata.record?preloadedMetadata:{...preloadedMetadata,ok:true,record:preloadedMetadata};
@@ -239,13 +325,12 @@
           if(livePreparations.has(identity) && cached?.ok && cached.form && cached._nativeIdentity===identity && now()-cached._nativeReadAt<nativeTtl
             && (recordId ? cached.record?.base===base && text(cached.record?.id)===text(recordId) : !cached.record))return cached;
         }
-        livePreparations.delete(identity);
         const fresh=recordId ? await sharedResult(nativeReads,identity,()=>handle.service.readRequest({base,id:text(recordId)}),true)
           : await handle.service.prepare({base,phone});
-        if(fresh?.ok)livePreparations.add(identity);
         return fresh;
       },refresh);
       if(!native?.ok)return native;
+      if(nativeForms.get(identity)?.value===native && identity===nativeIdentity(handle,recordId,phone))livePreparations.add(identity);
       const prepared={...native,lists:{...native.lists}};
       if(prepared.record) {
         if(!recordId || prepared.record.base!==base || text(prepared.record.id)!==text(recordId))return {ok:false,state:'record_changed',error:'CRM вернула другую заявку.'};
@@ -410,12 +495,12 @@
             context: { conversationId: context.chatId || context.conversationId, conversationUrl: context.dialogUrl || context.conversationUrl,
               clientId: clientId(context), clientName: context.clientName || context.client?.name,
               operatorId: context.operatorId || context.scope?.operatorId, accountId: context.accountId || context.scope?.accountId } });
-          void Promise.resolve(task).then(notified => {
+          void withContext(context,()=>Promise.resolve(task).then(notified => {
             if (notified?.postSave) remember(notified.postSave);
             else if (notified?.ok && notified.pending) remember({state:'pending'});
             if (!notified?.pending && (!notified?.ok || notified.name?.ok === false || notified.postSave?.name?.ok === false))
               failed(notified?.name?.error || notified?.postSave?.name?.error || notified?.error || 'Заявка сохранена. Добавление номера к имени диалога не подтверждено.');
-          }, () => failed());
+          }, () => failed()));
         } catch (_) { failed(); }
       }
       return result;
@@ -444,6 +529,19 @@
       if (!operationId || !/^[a-zA-Z0-9_-]{8,160}$/.test(operationId)) throw Error('Не удалось закрепить операцию сохранения.');
       } catch (error) { return {ok:false,state:'rejected',safeToRetry:true,code:'preflight',error:error?.message || 'Проверьте заполнение заявки.'}; }
       const gate = { type: 'LP_REQUEST_OPERATION', kind, base, scope: handle.scope, operationId, clientId:clientId(context), ...(data.draft.creationCycleId ? { cycleId: data.draft.creationCycleId } : {}), ...(kind === 'update' ? { recordId: text(recordId) } : {}) };
+      let begun;
+      try { begun=await rpc({...gate,command:'begin'}); }
+      catch(error){
+        // No service mutation has been invoked yet. A persisted preparing gate
+        // is retained for read-only reconciliation if only its reply was lost.
+        return {ok:false,state:'rejected',safeToRetry:true,writeStarted:false,code:'write_not_started',operationId,error:error?.message || 'Не удалось проверить журнал сохранения. Форма не отправлена.'};
+      }
+      if(!begun?.ok)return {ok:false,state:begun?.state || 'uncertain',operationId:begun?.operation?.operationId || operationId,error:begun?.error || 'Сохранение заявки уже выполняется.'};
+      if(begun.existing){
+        if(begun.operation?.state==='saved')return finalizeVerified(normalized(begun.operation.result),kind,context,handle,data.meta);
+        return reconcile({context,base,id:recordId,operationId,kind});
+      }
+      writeBindings.set(handle.scope+'|'+operationId,gate);
       let result;
       try {
         result = normalized(kind === 'create' ? await handle.service.createRequest({ base, operationId, fields: data.fields, ...(submitAction ? {submitAction} : {}), primaryPhoneField:data.meta.fieldNames?.phone,
@@ -453,14 +551,14 @@
           fields: data.fields, action, allowBindingChange:action === 'save' && data.draft.sourceOverride === true, primaryPhoneField:data.meta.fieldNames?.phone, reason: input.reason || '', expectedRevision: expectedRevision || input.expectedRevision || input.revision || '' }));
       } catch (error) { result = { ok: false, state: 'uncertain', operationId, writeStarted: true, error: error?.message || 'Результат сохранения ещё не известен.' }; }
       result=boundCancellation(result,base,recordId,operationId);
-      // Receipt storage and city/name handoff must not hold the native result.
-      // The service owns same-operation POST deduplication.
+      // The durable gate must know the outcome before another panel can act.
+      // Ancillary name updates remain outside this critical section.
       try {
-        const task=rpc({...gate,command:'record',result});
-        void Promise.resolve(task).then(finished=>{
-          if(finished?.cityNotification)result.cityNotification=finished.cityNotification;
-        },()=>{});
-      } catch (_) {}
+        const finished=await rpc({...gate,command:'finish',result});
+        if(!finished?.ok)return {...result,ok:false,verified:false,state:'uncertain',operationId,error:finished?.error || 'Не удалось закрепить результат сохранения.'};
+        if(finished.operation?.state==='saved')result=normalized(finished.operation.result);
+      }catch(error){return {...result,ok:false,verified:false,state:'uncertain',operationId,error:error?.message || 'Не удалось закрепить результат сохранения.'};}
+      finally {writeBindings.delete(handle.scope+'|'+operationId);}
       await finalizeVerified(result, kind, context, handle, data.meta);
       return result.code === 'customer_change_required' ? { ...result, state: 'customer_change_required', changes: result.customerDiffs || [] } : result;
     }
@@ -507,6 +605,7 @@
       }
       if(valid.length!==1)return {ok:false,state:'rejected',error:valid.length>1?'Этот номер найден в нескольких базах. Уточните базу заявки.':expectedCustomerId!==undefined?'Заявка не принадлежит клиенту открытой истории.':expectedPhone!==undefined?'Телефон найденной карточки не совпал с номером клиента.':results.find(item=>item.raw.error)?.raw.error || 'Заявка не найдена в CRM.'};
       const {handle,identity,cacheHit,readAt,raw,record}=valid[0],loaded={...raw,verified:true,record};
+      if(identity!==nativeIdentity(handle,recordId))return {ok:false,state:'superseded'};
       // A late background GET cannot replace a newer saved card or a new-form
       // generation. The panel also guards its current context and dirty fields.
       if(refreshBinding && (refreshBinding.identity!==identity || nativeForms.get(identity)!==refreshBinding.entry
@@ -514,10 +613,10 @@
       receipts.set(handle.key,record);receiptReadAt.set(handle.key,now());
       metadata.set(handle.key,{...metadata.get(handle.key),...raw,record});
       rememberNative(handle,{...raw,record},readAt);
-      const binding={key:handle.key,at:readAt};preloadedBindings.set(loaded,binding);preloadedBindings.set(record,binding);
+      const binding={key:handle.key,at:readAt,service:handle.service};preloadedBindings.set(loaded,binding);preloadedBindings.set(record,binding);
       if(cacheHit) {
         const refresh={identity,entry:nativeForms.get(identity),record};
-        void getRequest({context,id:recordId,base:record.base,expectedPhone,expectedCustomerId,fresh:true},refresh).then(value=>{
+        void withContext(context,()=>getRequest({context,id:recordId,base:record.base,expectedPhone,expectedCustomerId,fresh:true},refresh)).then(value=>{
           if(value.verified && typeof onRefresh==='function')try {onRefresh(value);} catch (_) {}
         },()=>{});
       }
@@ -581,6 +680,7 @@
           error:begun?.error || 'Заявка уже сохраняется.'};
         if(begun.existing)return begun.operation?.state==='saved' ? finalizeVerified(normalized(begun.operation.result),'update',context,handle) : reconcile({context,base,id:recordId,operationId,kind:'update'});
       }
+      writeBindings.set(handle.scope+'|'+operationId,gate);
       let result;
       try{
         const args={base,id:text(recordId),operationId};
@@ -590,6 +690,7 @@
           : await handle.service[notTaken?'prepareNotTakenRequest':'prepareCancellation']({...args,action:input.action,expectedRevision:input.expectedRevision || ''}));
         result=boundCancellation(result,base,recordId,operationId);
       }catch(error){result={ok:false,state:'uncertain',id:text(recordId),operationId,writeStarted:true,error:error?.message || 'Не удалось получить результат отмены.'};}
+      writeBindings.delete(handle.scope+'|'+operationId);
       const finished=await rpc({...gate,command:'finish',result});
       if(!finished?.ok)return {...result,ok:false,verified:false,state:'uncertain',error:finished?.error || 'Не удалось сохранить результат отмены.'};
       if(['saved','awaiting_reason'].includes(finished.operation?.state))result=normalized(finished.operation.result);
@@ -622,9 +723,11 @@
       const gate={type:'LP_REQUEST_OPERATION',kind:'update',base,recordId:text(recordId),scope:handle.scope,clientId:clientId(context),operationId};
       const begin=await rpc({...gate,command:'begin'});
       if(!begin?.ok)return {ok:false,state:begin?.state || 'rejected',operationId:begin?.operation?.operationId || operationId,error:begin?.error || 'Сохранение заявки ещё выполняется.'};
+      writeBindings.set(handle.scope+'|'+operationId,gate);
       let result;
       try{result=normalized(await handle.service.saveClaim({base,id:text(recordId),claimType:text(claimType),comment:String(comment ?? ''),operationId}));}
       catch(error){result={ok:false,state:'uncertain',id:text(recordId),operationId,error:error.message};}
+      writeBindings.delete(handle.scope+'|'+operationId);
       const finished=await rpc({...gate,command:'finish',result});
       if(!finished?.ok)return {...result,ok:false,verified:false,state:'uncertain',error:finished?.error || 'Не удалось записать результат сохранения.'};
       if(finished.operation?.state==='saved')result=finished.operation.result;
@@ -647,14 +750,14 @@
       if(result?.ok && result.confirmed===true)await storage.set({[key]:null});
       return result;
     }
-    async function reconcile({ context, operationId, base, kind, id: recordId, candidateId }) {
+    async function reconcile({ context, operationId, base, kind, id: recordId, candidateId, readOnly = true }) {
       const handle = await serviceFor(context, base || context.base);
       const gateKind = kind === 'update' || kind === 'reschedule' ? 'update' : 'create';
       const gate = { type: 'LP_REQUEST_OPERATION', kind: gateKind, base: base || context.base, scope: handle.scope, clientId:clientId(context), ...(gateKind === 'update' ? {recordId: text(recordId)} : {}) };
       const known = await rpc({ ...gate, command: 'status' });
       if (!known?.ok || known.operation?.operationId !== operationId || known.operation?.scope !== handle.scope || known.operation.clientId && known.operation.clientId !== clientId(context)
           || gateKind === 'create' && known.operation?.state === 'saved' && !known.operation.clientId) return {ok:false,verified:false,state:'uncertain',error:known?.error || 'Не подтверждена принадлежность операции текущему клиенту. Повторная отправка отключена.'};
-      let result = normalized(await handle.service.reconcile({ base: base || context.base, operationId, ...(candidateId ? {candidateId: text(candidateId)} : {}) }));
+      let result = normalized(await handle.service.reconcile({ base: base || context.base, operationId, readOnly, ...(candidateId ? {candidateId: text(candidateId)} : {}) }));
       result=boundCancellation(result,base || context.base,recordId,operationId);
       if (result.code === 'operation_missing' && known.operation.phase === 'preparing') result = {ok:false,state:'rejected',safeToRetry:true,writeStarted:false,code:'write_not_started',error:'Отправка не начиналась. Проверьте форму и сохраните её ещё раз.'};
       const resolved = await rpc({ ...gate, command: 'resolve', operationId, result });
@@ -691,14 +794,36 @@
       if(root.LeadPartnerRules.cityAlias(city) && !root.LeadPartnerRules.routeCity(options(cities),city))return {ok:false,state:'unavailable',reason:'configured-branch-unavailable'};
       return mapRoute.resolveBranchCity({base,city,cities:options(cities),signal});
     }
+    async function getOperationStatus({context,base,id:recordId,kind='create'}) {
+      const handle=await serviceFor(context,base || context.base);
+      const gate={type:'LP_REQUEST_OPERATION',kind:kind==='create'?'create':'update',base:base || context.base,scope:handle.scope,clientId:clientId(context),...(kind==='create'?{}:{recordId:text(recordId)})};
+      const result=await rpc({...gate,command:'status'}),operation=result?.operation;
+      if(!result?.ok || operation && (operation.scope!==handle.scope || operation.clientId!==clientId(context)))
+        return {ok:false,state:'uncertain',error:result?.error || 'Операция принадлежит другому клиенту.'};
+      return {ok:true,operation:operation || null};
+    }
     async function newRequest({context, base, id: recordId}) {
       const handle=await serviceFor(context,base || context.base);
+      const known=await getOperationStatus({context,base:base || context.base});
+      if(!known.ok)return known;
+      const previous=known.operation;
+      const safelyRejected=previous?.state==='rejected' && previous.result?.state==='rejected' && previous.result.writeStarted!==true;
+      if(previous && !['saved','ready'].includes(previous.state) && !safelyRejected)
+        return {ok:false,state:'uncertain',operationId:previous.operationId,error:'Результат предыдущего сохранения ещё не подтверждён. Сначала проверьте его; повторное создание отключено.'};
+      let cycleId=previous?.state==='ready' || safelyRejected ? previous.cycleId : '';
+      if(!cycleId)cycleId=(config.crypto || root.crypto).randomUUID();
+      if(previous?.state==='saved'){
+        // The displayed record may be a different verified history result. It
+        // supplies repeat fields, while the gate advances its own saved proof.
+        const opened=await rpc({type:'LP_REQUEST_OPERATION',command:'new',kind:'create',base:base || context.base,scope:handle.scope,clientId:clientId(context),recordId:text(previous.result.record.id),operationId:cycleId});
+        if(!opened?.ok)return opened;
+      }
       formGenerations.set(handle.key,(formGenerations.get(handle.key)||0)+1);
-      clearScoped(nativeForms,handle.key);clearScoped(nativeReads,handle.key);clearScoped(dependentLists,handle.key);
+      clearScoped(nativeForms,handle.key);clearScoped(nativeReads,handle.key);clearScoped(dependentLists,handle.key);clearScoped(livePreparations,handle.key);
       receipts.delete(handle.key); metadata.delete(handle.key); receiptReadAt.delete(handle.key);
       freshForms.add(handle.key);
       try { void Promise.resolve(storage?.remove?.(metadataKey(handle))).catch(()=>{}); } catch (_) {}
-      return {ok:true,cycleId:root.crypto.randomUUID()};
+      return {ok:true,cycleId};
     }
     async function startCall({context,base,id:recordId}) {
       const loaded=await getRequest({context,base:base || context.base,id:recordId});
@@ -753,8 +878,9 @@
         return { ok: true, provider:'yandex', candidates, ...links, notice: candidates.length ? '' : 'Точный дом не найден. Уточните адрес; ближайший дом автоматически не подставляется.' };
       } finally { clearTimeout(timer); }
     }
-    return Object.freeze({ startCall, resolveBase, getMetadata, getCachedMetadata, getDependencies, duplicates, searchPhone: duplicates,
-      createRequest: args => write('create', args), updateRequest: args => write('update', args), performAction,openChat,prepareClaim,createClaim,prepareCancellation,saveCancellation,cancelRequest,notTakenRequest,whereMaster,getRequest,getAudioRecords, reconcile, resolveAddress, routeFromCity, resolveBranchCity, setMapKey, newRequest, getPostSaveStatus });
+    const api={startCall,resolveBase,getMetadata,getDependencies,duplicates,searchPhone:duplicates,
+      createRequest:args=>write('create',args),updateRequest:args=>write('update',args),performAction,openChat,prepareClaim,createClaim,prepareCancellation,saveCancellation,cancelRequest,notTakenRequest,whereMaster,getRequest,getAudioRecords,reconcile,resolveAddress,routeFromCity,resolveBranchCity,setMapKey,newRequest,getOperationStatus,getPostSaveStatus};
+    return Object.freeze({...Object.fromEntries(Object.entries(api).map(([name,method])=>[name,tracked(method)])),getCachedMetadata});
   }
   return Object.freeze({ create, canonicalRecord, sourceMatch, appendLine, mapLinks, cityDeliveryMode });
 });

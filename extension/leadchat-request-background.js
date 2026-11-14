@@ -46,7 +46,16 @@
           const receipt=PREFIX+'receipt:'+input.scope+':'+input.base+':'+input.operationId;
           const previous=(await storage.get(receipt))[receipt];
           if(previous?.state==='saved' && (previous.clientId!==input.clientId || !saved || String(previous.result?.record?.id)!==String(result.record.id))) throw Error('Нельзя заменить подтверждённый номер заявки.');
-          await storage.set({[key]:operation,[receipt]:operation});
+          const current=(await storage.get(key))[key];
+          validateCheckpoint(current,input);
+          if(current?.operationId===input.operationId && current.state==='saved'
+              && (current.clientId!==input.clientId || !saved || String(current.result?.record?.id)!==String(result.record.id)))
+            throw Error('Нельзя заменить подтверждённый номер заявки.');
+          // A delayed handoff can finish after an explicit new cycle starts.
+          // Keep its exact receipt without rolling the active writer backwards.
+          const sameOperation=current?.operationId===input.operationId;
+          const checkpoint=sameOperation?{...current,...operation}:operation;
+          await storage.set({[receipt]:checkpoint,...(!current || sameOperation?{[key]:checkpoint}:{})});
           // Enqueue the exact receipt before another save can replace the
           // record-level proof. The panel does not await this background job.
           let cityNotification;

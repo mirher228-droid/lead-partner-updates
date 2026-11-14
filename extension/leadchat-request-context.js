@@ -77,15 +77,20 @@
   }
 
   function profileInfo(raw, workTitle = '') {
-    const profileTitle = clean(raw).split(/[·•|]/, 1)[0].replace(/\s+/g, ' ').trim();
+    const profileFullTitle = clean(raw);
+    const profileTitle = profileFullTitle.split(/[·•|]/, 1)[0].replace(/\s+/g, ' ').trim();
     const matches = [...profileTitle.toUpperCase().matchAll(/(^|[^\p{L}\p{N}])(КП|МНЧ|БТ)(?=$|[^\p{L}\p{N}])/gu)];
     const map = { КП: 'kp', МНЧ: 'mnc', БТ: 'bt' };
-    const baseCandidates = rules?.televisionService({profileFullTitle:clean(raw),workTitle}) ? ['kp'] : [...new Set(matches.map(match => map[match[2]]))];
+    // Native header tags describe the candidate set. Use the same deterministic
+    // decision as the panel for the chosen base and the manual-choice warning.
+    const baseCandidates = rules?.baseCandidates?.({profileFullTitle}) || [...new Set(matches.map(match => map[match[2]]))];
+    const resolution = rules?.resolveBase?.({profileFullTitle,profileTitle,workTitle:clean(workTitle,400),baseCandidates},baseCandidates);
+    const base = resolution ? resolution.base : baseCandidates.length === 1 ? baseCandidates[0] : '';
     let label = profileTitle.replace(/(?:\s+|\s*[-–—]\s*)(?:КП|МНЧ|БТ)(?:\s*[-–—/]\s*(?:КП|МНЧ|БТ))*\s*$/iu, '').trim();
     if (/[<>]/.test(label) || label.length > 100) label = '';
     const first = label.replace(/^(?:Мс|Мастер)\s+/iu, '').split(/\s+/)[0];
     const masterComment = label && names.has(first.toLocaleLowerCase('ru')) ? 'Мс ' + first : label;
-    return { profileTitle, profileComment: profileTitle, masterComment, base: baseCandidates.length === 1 ? baseCandidates[0] : '', baseCandidates, requiresBaseChoice: baseCandidates.length !== 1 };
+    return { profileTitle, profileComment: profileTitle, masterComment, base, baseCandidates, requiresBaseChoice: resolution ? resolution.requiresManual : baseCandidates.length !== 1 };
   }
 
   function normalizePhone(value) {

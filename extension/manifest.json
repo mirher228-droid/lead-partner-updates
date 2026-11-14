@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Lead-Partner · Общая",
   "short_name": "LP Общая",
-  "version": "1.2.50",
+  "version": "1.2.51",
   "description": "Панель Авито в LeadChat: заявки, карты и общий каталог. Оригинальные страницы CRM не изменяются.",
   "action": {
     "default_title": "Lead-Partner · Общая",

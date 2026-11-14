@@ -5,6 +5,7 @@ on:
     paths: ['extension/**', 'tools/build_common.py', 'tests/test_cloud_build.py', '.github/workflows/cloud-common.yml']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -15,8 +16,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Package regression checks
         run: python -m unittest discover -s tests -p test_cloud_build.py
+      - name: Panel reliability and browser recovery checks
+        shell: pwsh
+        run: |
+          $env:CHROMIUM_PATH = Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'
+          node --test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and syntax-check Common
         run: python tools/build_common.py
       - name: Validate exact package with stable release policy

@@ -1,12 +1,27 @@
 """Offline Common extension validation and deterministic packaging (no publishing)."""
 import hashlib
+import fnmatch
 import json
 import pathlib
 import re
 import subprocess
 import zipfile
+from html.parser import HTMLParser
+from urllib.parse import unquote, urljoin, urlsplit
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+class HtmlResources(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.references = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag in ('script', 'img', 'iframe') and attrs.get('src'):
+            self.references.append(attrs['src'])
+        if tag == 'link' and 'stylesheet' in attrs.get('rel', '').lower().split() and attrs.get('href'):
+            self.references.append(attrs['href'])
 
 def build(source, output):
     source, output = pathlib.Path(source), pathlib.Path(output)
@@ -46,6 +61,33 @@ def build(source, output):
     for name in resources:
         if name.lstrip('/') not in files:
             raise ValueError('Missing manifest resource: ' + name)
+    for group in manifest.get('web_accessible_resources', []):
+        for name in group.get('resources', []):
+            if not any(fnmatch.fnmatchcase(path, name.lstrip('/')) for path in files):
+                raise ValueError('Missing manifest resource: ' + name)
+    # Classic workers here use literal, top-level importScripts calls. This is
+    # deliberately limited to that form, rather than pretending to parse JS.
+    worker = background.get('service_worker')
+    if worker:
+        literal_imports = r'''^[ \t]*importScripts\s*\(\s*((?:'[^'\\\r\n]*'|"[^"\\\r\n]*")(?:\s*,\s*(?:'[^'\\\r\n]*'|"[^"\\\r\n]*"))*)\s*\)'''
+        for call in re.finditer(literal_imports, files[worker.lstrip('/')].decode('utf-8-sig'), re.MULTILINE):
+            for reference in re.findall(r'''['"]([^'"]+)['"]''', call.group(1)):
+                target = urlsplit(urljoin('https://extension.invalid/' + worker, reference))
+                if target.netloc == 'extension.invalid' and unquote(target.path).lstrip('/') not in files:
+                    raise ValueError('Missing worker resource: ' + reference)
+    # The embedded card loads most of its code from HTML, outside the manifest's
+    # content_scripts array. Check those dependencies before producing a ZIP.
+    for name, data in files.items():
+        if not name.endswith('.html'):
+            continue
+        parser = HtmlResources()
+        parser.feed(data.decode('utf-8-sig'))
+        for reference in parser.references:
+            target = urlsplit(urljoin('https://extension.invalid/' + name, reference))
+            if target.scheme == 'https' and target.netloc == 'extension.invalid':
+                resource = unquote(target.path).lstrip('/')
+                if resource not in files:
+                    raise ValueError('Missing HTML resource: ' + name + ' -> ' + reference)
     inventory = {'schemaVersion': 1, 'version': version, 'files': [
         {'path': name, 'sha256': hashlib.sha256(data).hexdigest()} for name, data in sorted(files.items())]}
     files['ROOTRELEASE_FILES.json'] = (json.dumps(inventory, indent=2) + '\n').encode()

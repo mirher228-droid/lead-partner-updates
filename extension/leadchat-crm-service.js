@@ -211,6 +211,19 @@
         const preparedRequests = new Map();
         const preparedDropdowns = new WeakMap();
         const nativeFormTtl = 30000;
+        const maxPreparedForms = 256;
+        function rememberPrepared(cache,key,entry) {
+            cache.delete(key);cache.set(key,entry);
+            const at=Date.now();let settled=0;
+            for(const [candidate,value] of cache){
+                if(value.pending)continue;
+                if(at-value.at>=nativeFormTtl)cache.delete(candidate);else settled++;
+            }
+            for(const [candidate,value] of cache){
+                if(settled<=maxPreparedForms)break;
+                if(!value.pending){cache.delete(candidate);settled--;}
+            }
+        }
         const sentProgress = new Map();
         const writeGateAccepted = new Set();
         const storage = config.storage || (root.chrome?.storage?.local ? {
@@ -260,7 +273,7 @@
                     ...(options.body !== undefined ? { body: str(options.body) } : {}), ...(controller ? { signal: controller.signal } : {}) })).then(async response => {
                     const headers = response.headers || {};
                     const getHeader = name => typeof headers.get === 'function' ? headers.get(name) : Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] || '';
-                    let responseText = '', bodyReadError = '';
+                    let responseText = '', bodyReadError = response.bodyReadError ? str(response.error || 'Ответ CRM оборвался при чтении.') : '';
                     try { responseText = typeof response.text === 'function' ? await response.text() : str(response.text ?? response.html ?? ''); }
                     catch (error) { if (method === 'GET') throw error; bodyReadError = error?.message || 'Ответ CRM оборвался при чтении.'; }
                     return { status: Number(response.status || 200), url: response.url || target,
@@ -305,7 +318,7 @@
             const now = new Date(), today = [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');
             const date = isoDate(args.date) || isoDate(form.values[N.date]) || today;
             const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(str(args.time)) ? str(args.time) : str(form.values[N.time] || '10:00').slice(0,5);
-            const key = [args.base,cityId,date].join('|'), at = Date.now();
+            const key = [args.base,cityId,date,time].join('|'), at = Date.now();
             for (const [cachedKey,cached] of cityNoticeCache) if (at-cached.at >= 30000) cityNoticeCache.delete(cachedKey);
             if (cityNoticeCache.has(key)) return cityNoticeCache.get(key).pending;
             // Read the same fixed endpoint as the CRM city selector. Share and
@@ -505,9 +518,11 @@
             return diffs;
         }
         async function prepare(args) {
+            const formKey=args.base+':'+phone10(args.phone),preparation={at:-Infinity,pending:true};
+            rememberPrepared(preparedCreates,formKey,preparation);
             try {
                 const current = await getCreate(args);
-                preparedCreates.set(args.base+':'+phone10(args.phone),{at:Date.now(),current});
+                if(preparedCreates.get(formKey)===preparation)rememberPrepared(preparedCreates,formKey,{at:Date.now(),current});
                 const output = { ok: true, state: 'ready', base: args.base, form: publicForm(current.form), lists: lists(current.form), cityNotice:current.document.cityNotice || '',cityNoticeCityId:str(current.form.values['CustomerRequest[city_id]'] || ''), sessionOperator: current.document.sessionOperator || '',
                     fieldNames: names(current.form, current.customer, args.phone),
                     matches: current.lookup.matches, incomplete: !!current.lookup.incomplete, customerId: current.lookup.customerId,
@@ -529,28 +544,89 @@
                     output.cityNoticeCityId = deps.cityNoticeCityId;
                 }
                 return output;
-            } catch (error) {preparedCreates.delete(args.base+':'+phone10(args.phone));return reject(error.message);}
+            } catch (error) {if(preparedCreates.get(formKey)===preparation)preparedCreates.delete(formKey);return reject(error.message);}
         }
-        function parseList(response, name) {
+        function parseList(response, name, strictBase = '') {
             if (response.status >= 400) throw new Error('CRM не отдала справочник: HTTP ' + response.status + '.');
-            let json;
-            try { json = JSON.parse(response.text); } catch (_) { json = null; }
+            if (strictBase) {
+                if (response.status < 200 || response.status >= 300) throw new Error('CRM не подтвердила чтение справочника.');
+                const returned = new URL(response.url);
+                if (returned.origin !== BASES[strictBase] || /\/(?:login|default\/index)(?:[/?#]|$)/i.test(returned.pathname)) throw new Error('CRM не подтвердила адрес справочника.');
+            }
+            const hasErrors = item => item.error || item.errors && (typeof item.errors !== 'object' || Object.keys(item.errors).length) || item.ok === false || item.success === false;
+            const assertRows = (rows, groups = false) => {
+                if (!strictBase) return rows;
+                if (!Array.isArray(rows)) throw new Error('CRM вернула неполный справочник.');
+                for (const item of rows) {
+                    if (!item || typeof item !== 'object' || Array.isArray(item) || hasErrors(item)) throw new Error('CRM вернула неполный справочник.');
+                    const id = item.id ?? item.value, label = item.text ?? item.name ?? item.label;
+                    if (Object.hasOwn(item,'children')) {
+                        if (!groups || typeof label !== 'string' || !label.trim()) throw new Error('CRM вернула неполную группу справочника.');
+                        assertRows(item.children);
+                    } else if (id == null || typeof label !== 'string' || str(id) && (!/^\d+$/.test(str(id)) || !label.trim())) throw new Error('CRM вернула неполный справочник.');
+                }
+                return rows;
+            };
+            let json, parsed = false;
+            try { json = JSON.parse(response.text); parsed = true; } catch (_) { json = null; }
             if (json) {
+                if (strictBase && !Array.isArray(json) && hasErrors(json)) throw new Error('CRM вернула ошибку справочника.');
                 let source = Array.isArray(json) ? json : json.output || json.results || json.items || json.data;
                 if (source && !Array.isArray(source) && typeof source === 'object') source = Object.entries(source).map(([id, text]) => ({ id, text }));
-                if (Array.isArray(source)) return source.flatMap(item => item?.children || [item]).map(item => ({ id: str(item.id ?? item.value), text: str(item.text ?? item.name ?? item.label), disabled: !!item.disabled })).filter(item => /^\d+$/.test(item.id));
+                if (Array.isArray(source)) return assertRows(source,true).flatMap(item => item?.children || [item]).map(item => ({ id: str(item.id ?? item.value), text: str(item.text ?? item.name ?? item.label), disabled: !!item.disabled })).filter(item => /^\d+$/.test(item.id));
             }
+            if (strictBase && parsed) throw new Error('CRM не отдала распознаваемый справочник.');
             return Promise.resolve(parseDocument(response.text, response.url)).then(document => {
                 if (document.login || response.status >= 400) throw new Error('CRM не отдала справочник. Проверьте вход.');
-                const select = document.forms.flatMap(form => form.fields).find(item => item.name === name);
-                return (select ? select.options : document.forms.length ? [] : document.options).filter(item => /^\d+$/.test(item.id));
+                const fields = document.forms.flatMap(form => form.fields).filter(item => item.name === name);
+                if (strictBase) {
+                    if (document.errors?.length) throw new Error('CRM вернула ошибку справочника.');
+                    const named = fields.concat((document.standaloneSelects || []).filter(item => item.name === name));
+                    if (named.length > 1 || named.length === 1 && named[0].tag !== 'select') throw new Error('Поле справочника CRM определено неоднозначно.');
+                    if (named[0]?.disabled) throw new Error('Справочник CRM сейчас недоступен.');
+                    if (!named.length && document.optionFragment !== true) throw new Error('CRM не отдала поле справочника.');
+                    return assertRows(named.length ? named[0].options : document.options).filter(item => /^\d+$/.test(item.id));
+                }
+                return (fields.length ? fields[0].options : document.forms.length ? [] : document.options).filter(item => /^\d+$/.test(item.id));
             });
         }
         async function dependencies(args) {
             const prepared=args.preparedPhone!==undefined?preparedCreates.get(args.base+':'+phone10(args.preparedPhone)):null;
             return loadDependencies(args,prepared && Date.now()-prepared.at<nativeFormTtl?prepared.current:null);
         }
-        async function loadDependencies(args, current) {
+        async function readWorkCatalog(args) {
+            // Keep this live snapshot inside one read-only base comparison. It
+            // must never become a prepared write form or a long-lived cache.
+            const selection = Object.freeze({base:str(args?.base),cityId:str(args?.cityId),partnerId:str(args?.partnerId || ''),partnerNumber:str(args?.partnerNumber || '')});
+            try {
+                if (!/^\d+$/.test(selection.cityId)) return reject('Сначала выберите город.');
+                const current = await documentAt(selection.base, PATH + 'create');
+                const returned = new URL(current.response.url);
+                if (current.response.status < 200 || current.response.status >= 300 || current.document.errors?.length) return reject('CRM не подтвердила чтение формы создания.');
+                if (returned.origin !== BASES[selection.base] || ![PATH+'create',PATH+'create/'].includes(returned.pathname)) return reject('CRM не подтвердила адрес формы создания.');
+                current.form = requestForm(current.document);
+                if (!current.form) return reject('Форма CRM не найдена.');
+                let partnerId = selection.partnerId;
+                if (selection.partnerNumber) {
+                    const number = value => {
+                        const match = str(value).normalize('NFKC').replace(/ё/gi,'е').toLocaleLowerCase('ru').replace(/\s+/gu,' ').trim().match(/^(?:партнер\s*(?:no\.?|[:№-])?\s*)?(\d+)(?=$|[^\d])/u);
+                        return match ? match[1].replace(/^0+(?=\d)/u,'') : '';
+                    };
+                    const wanted = number(selection.partnerNumber);
+                    const matches = (field(current.form,N.partner)?.options || []).filter(item => !item.disabled && /^\d+$/.test(str(item.id)) && wanted && number(item.text ?? item.label) === wanted);
+                    if (matches.length !== 1 || partnerId && partnerId !== str(matches[0].id)) return reject('Партнёр не определён однозначно в справочнике выбранной CRM.');
+                    partnerId = str(matches[0].id);
+                }
+                const selected = Object.freeze({...selection,partnerId});
+                const catalog = await loadDependencies({...selected,applianceTypeId:''},current,{skipCityNotice:true,strictLists:true});
+                if (!catalog.ok) return catalog;
+                return {...clone(catalog),partnerId,selection:selected,servicesFor:async workId => {
+                    if (!/^\d+$/.test(str(workId))) return reject('Выберите вид работ из справочника CRM.');
+                    return clone(await loadDependencies({...selected,applianceTypeId:str(workId)},current,{skipCityNotice:true,strictLists:true}));
+                }};
+            } catch (error) { return reject(error.message); }
+        }
+        async function loadDependencies(args, current, {skipCityNotice = false, strictLists = false} = {}) {
             try {
                 if (!/^\d+$/.test(str(args.cityId))) return reject('Сначала выберите город.');
                 // Creation has just read its own live form. Reuse only that
@@ -560,7 +636,7 @@
                 if (!form) throw new Error('Форма CRM не найдена.');
                 const partner = str(args.partnerId || '');
                 if (partner && !field(form, N.partner)?.options.some(item => item.id === partner && !item.disabled)) throw new Error('Партнёр отсутствует в справочнике выбранной CRM.');
-                const notice = cityNoticeFor(args,form);
+                const notice = skipCityNotice ? Promise.resolve({}) : cityNoticeFor(args,form);
                 const query = new URLSearchParams({ _get_appltype: '1', city_id: str(args.cityId), appl_id: '', subappl_id: '', has_partner: partner ? '1' : '0' });
                 // A native preparation owns these dropdowns and its CSRF token.
                 // Date changes only need their timetable; they do not change the
@@ -569,7 +645,7 @@
                 if(current && !dropdowns){dropdowns=new Map();preparedDropdowns.set(current,dropdowns);}
                 const workKey=JSON.stringify([str(args.cityId),partner]),serviceKey=workKey+'|'+str(args.applianceTypeId || '');
                 let workTypes=dropdowns?.get(workKey);
-                if(!workTypes){const workResponse=await http(args.base,PATH+'create?'+query);workTypes=await parseList(workResponse,N.work);dropdowns?.set(workKey,workTypes);}
+                if(!workTypes){const workResponse=await http(args.base,PATH+'create?'+query);workTypes=await parseList(workResponse,N.work,strictLists ? args.base : '');dropdowns?.set(workKey,workTypes);}
                 const sub = serviceField(form);
                 let services = [];
                 if (args.applianceTypeId) {
@@ -578,7 +654,7 @@
                         query.set('appl_id', str(args.applianceTypeId)); query.set('get_subappltypes', '1');
                         const cachedServices=dropdowns?.get(serviceKey);
                         if(cachedServices)services=cachedServices;
-                        else {const response=await http(args.base,PATH+'create?'+query);services=await parseList(response,sub.name);}
+                        else {const response=await http(args.base,PATH+'create?'+query);services=await parseList(response,sub.name,strictLists ? args.base : '');}
                         if (services.length && JSON.stringify(services.map(item => item.id)) === JSON.stringify(workTypes.map(item => item.id))) services = [];
                         if (!services.length) for (const dep of sub.dependencies || []) {
                             const url = new URL(dep.url, baseUrl(args.base));
@@ -595,7 +671,7 @@
                                 for (const [key, value] of [['id', args.applianceTypeId], ['appl_id', args.applianceTypeId], ['appliance_type_id', args.applianceTypeId], ['city_id', args.cityId]]) url.searchParams.set(key, str(value));
                                 result = await http(args.base, url.href);
                             }
-                            services = await parseList(result, sub.name);
+                            services = await parseList(result, sub.name, strictLists ? args.base : '');
                             if (services.length) break;
                         }
                         if(services.length)dropdowns?.set(serviceKey,services);
@@ -710,7 +786,7 @@
                 : /В пути/i.test(record.status) ? '#46b458' : /Модерац/i.test(record.status) ? '#e55454' : '#54d350';
             const current={ ...page, form, customer, record };
             // A slower earlier GET must not replace a newer native save reply.
-            if(nativeResponse || preparedRequests.get(preparedKey)===preparedBefore)preparedRequests.set(preparedKey,{at:Date.now(),current});
+            if(nativeResponse || preparedRequests.get(preparedKey)===preparedBefore)rememberPrepared(preparedRequests,preparedKey,{at:Date.now(),current});
             return current;
         }
         async function readRequest(args) {
@@ -791,6 +867,9 @@
                 commentAvailable:!!comment,commentRequired:!!comment?.required,record,...(error?{error}: {})};
         }
         async function captureCancellation(args,response,current) {
+            // A proxy failure must not grant permission for the next native
+            // form merely because its body resembles a continuation page.
+            if(response.bodyReadError || response.status>=400){await responseRejection(response);return null;}
             const document=await parseDocument(response.text,response.url);
             const data=cancellationPage(args,response,document);
             if(!data)return null;
@@ -906,7 +985,7 @@
                         if(latest.state==='rejected')return clone(latest.result);
                         return persistResult(args.operationId,cancellationResult(latest,latest.result?.record,error.message));
                     }
-                    const result=uncertain(error.message,{id:entry.id,operationId:args.operationId});
+                    const result=uncertain(error.message,{id:entry.id,operationId:args.operationId,writeStarted:true});
                     await persistResult(args.operationId,result);return result;
                 }
             },true);
@@ -1156,24 +1235,36 @@
             return '';
         }
         async function responseRejection(response) {
+            const status=response.status,validationStatus=status===400 || status===422;
+            const unknown = () => {throw new Error('CRM не подтвердила результат сохранения'+(status>=400?': HTTP '+status:'')+'. Проверьте карточку без повторной отправки.');};
+            // A gateway/server error can arrive after CRM committed the form.
+            // Its error text, including native-looking HTML, cannot prove refusal.
+            if(response.bodyReadError || status>=500 || status===408 || status===429)unknown();
             // Yii AJAX validation returns field errors as JSON, not HTML. Do
             // not mistake a 200 validation response for a completed form save.
             if (/^\s*[\[{]/.test(response.text)) {
-                try {
-                    const value=JSON.parse(response.text);
+                let value;
+                try {value=JSON.parse(response.text);} catch (_) { /* Native HTML may still explain the refusal. */ }
+                if(value && typeof value==='object'){
                     const explicitFailure=value?.success===false || value?.result===false || value?.ok===false;
                     const errors=value?.errors && typeof value.errors==='object'?value.errors:value;
                     const messages=Array.isArray(errors) ? errors.flat() : Object.entries(errors || {})
                         .flatMap(([key,item])=>Array.isArray(item)?item:key==='error' && typeof item==='string'?[item]:[]);
-                    if(explicitFailure && typeof value?.message==='string')messages.push(value.message);
-                    if(messages.some(item=>typeof item==='string' && item.trim())) return messages.filter(item=>typeof item==='string').join('; ');
-                    if(explicitFailure) return 'CRM отклонила сохранение.';
-                } catch (_) { /* HTML readback remains authoritative. */ }
+                    const nativeFields=errors && !Array.isArray(errors) && Object.keys(errors).length>0
+                        && Object.entries(errors).every(([name,items])=>/^(?:customerrequest-|customer-|CustomerRequest\[|Customer\[)/.test(name)
+                            && Array.isArray(items) && items.length>0 && items.every(item=>typeof item==='string' && item.trim()));
+                    if(nativeFields && (status<400 || validationStatus))return messages.join('; ');
+                    if(explicitFailure || messages.some(item=>typeof item==='string' && item.trim()))unknown();
+                }
             }
             const document = await parseDocument(response.text, response.url);
-            if (document.login || /\/(?:login|default\/index)(?:[/?#]|$)/i.test(response.redirect || response.url)) return 'Сессия CRM истекла. Форма не сохранена.';
-            if (document.errors.length) return document.errors.join('; ');
-            if (response.status >= 400) return 'CRM отклонила форму: HTTP ' + response.status + '.';
+            if(document.errors?.length){
+                // Generic alerts can be emitted by a proxy even with HTTP 200.
+                // Only a complete native validation form proves a safe refusal.
+                if((status<400 || validationStatus) && document.csrfToken && (requestForm(document) || customerForm(document)))return document.errors.join('; ');
+                unknown();
+            }
+            if(status>=400 || document.login || /\/(?:login|default\/index)(?:[/?#]|$)/i.test(response.redirect || response.url))unknown();
             return '';
         }
         async function persistResult(operationId, result, more) {
@@ -1182,7 +1273,7 @@
                 preparedCreates.delete(entry.base+':'+entry.phone);
                 preparedRequests.delete(entry.base+':'+entry.id);
             }
-            if (['saved', 'rejected'].includes(result.state)) sentProgress.delete(operationId);
+            if (['saved', 'rejected'].includes(result.state)) {sentProgress.delete(operationId);writeGateAccepted.delete(operationId);}
             return result;
         }
         async function markSent(args, patch) {
@@ -1356,7 +1447,7 @@
                 const formKey=args.base+':'+phone;
                 const prepared=preparedCreates.get(formKey);
                 const current = prepared && Date.now()-prepared.at<nativeFormTtl ? prepared.current : await getCreate({base:args.base,phone});
-                preparedCreates.set(formKey,{at:Date.now(),current});
+                rememberPrepared(preparedCreates,formKey,{at:Date.now(),current});
                 const lookup=current.lookup;
                 const command=args.submitAction==='clarify' ? current.document.actions.find(item=>item.key==='on_precheck' && item.enabled && item.type==='submit') : null;
                 if(args.submitAction==='clarify'){
@@ -1620,6 +1711,9 @@
         async function reconcile(args) {
             return locked('write', async () => {
             let entry;
+            const pendingReadOnly = (current, extra = {}) => persistResult(args.operationId, uncertain(
+                'Результат проверен. Оставшееся действие не отправлено автоматически. Проверьте карточку CRM.',
+                {code:'reconcile_read_only',writeStarted:true,id:current.record.id,record:current.record,operationId:args.operationId,...extra}));
             try {
                 if (!storage) return reject('Хранилище операций недоступно.');
                 entry = ((await storage.get(storageKey)) || {})[args.operationId];
@@ -1659,8 +1753,12 @@
                     if (!checked.ok) return uncertain('Выбранная заявка не совпала с данными отправленной формы.', { operationId: args.operationId, candidateId, record: current.record, verified: checked });
                     await recordOperation(args.operationId, { id: candidateId, confirmedCandidate: true });
                     if (wanted && entry.commentsPhase === 'pending') {
-                        try { current = await completeCreatedPartnerComment({base:entry.base,operationId:args.operationId},candidateId,wanted,current); }
-                        catch (_) { current = await readPrivate({base:entry.base,id:candidateId}); }
+                        if(args.readOnly === true) {
+                            if(!createdSourceMatches(current,{...entry,id:candidateId}))return await pendingReadOnly(current,{expectedSource:wanted,sourceCommitted:false});
+                        } else {
+                            try { current = await completeCreatedPartnerComment({base:entry.base,operationId:args.operationId},candidateId,wanted,current); }
+                            catch (_) { current = await readPrivate({base:entry.base,id:candidateId}); }
+                        }
                     }
                     const sourceCommitted = createdSourceMatches(current,{...entry,id:candidateId});
                     const verified = verify(current, expected, entry.expectedPrimaryPhoneField);
@@ -1691,6 +1789,7 @@
                     && current.record.status===pendingAction.beforeStatus && verify(current,pendingCommentProof).ok){
                     const command=current.record.actions.find(item=>item.key===pendingAction.key && item.enabled && (item.type==='submit' || pendingNotTaken && item.type==='link'));
                     if(command){
+                        if(args.readOnly === true)return await pendingReadOnly(current);
                         const body=serialize(current.form,{}, {param:current.document.csrfParam,token:current.document.csrfToken});
                         nativeSubmit(current.form,body,false);nativeCommand(current.form,body,command);
                         const target=new URL(command.type==='link'?command.url:current.form.action || current.record.url,BASES[entry.base]);
@@ -1711,6 +1810,7 @@
                     // after exact ID + phone identity are rechecked.
                     if (linkedPhoneName(current,entry.phone)
                         && !(entry.beforeIds || []).includes(str(entry.id))) {
+                        if(args.readOnly === true)return await pendingReadOnly(current,{expectedSource:wanted,sourceCommitted:false});
                         try { current = await completeCreatedPartnerComment({base:entry.base,operationId:args.operationId},str(entry.id),wanted,current); }
                         catch (_) { current = await readPrivate({base:entry.base,id:entry.id}); }
                     }
@@ -1746,7 +1846,14 @@
                 }
                 const confirmedIdentity = entry.kind === 'create' && !verified.diffs.some(item=>item.name==='_nativeAction') && /^\d+$/.test(str(entry.id)) && entry.phone.length === 10
                     && !(entry.beforeIds || []).map(str).includes(str(entry.id)) && !!linkedPhoneName(current,entry.phone);
-                if(verified.ok&&entry.postEditIntent){const post=await completePostEdit({...args,base:entry.base,id:entry.id},current,entry);if(!post.ok)return persistResult(args.operationId,uncertain(post.error,{id:entry.id,record:post.current.record,operationId:args.operationId,primarySaved:true}));current=post.current;Object.assign(entry.expected,post.expected);}
+                if(verified.ok&&entry.postEditIntent){
+                    if(args.readOnly === true) {
+                        if(!entry.postEditExpected || !verify(current,entry.postEditExpected,entry.expectedPrimaryPhoneField).ok)return await pendingReadOnly(current,{primarySaved:true});
+                        Object.assign(entry.expected,entry.postEditExpected);
+                    } else {
+                        const post=await completePostEdit({...args,base:entry.base,id:entry.id},current,entry);if(!post.ok)return persistResult(args.operationId,uncertain(post.error,{id:entry.id,record:post.current.record,operationId:args.operationId,primarySaved:true}));current=post.current;Object.assign(entry.expected,post.expected);
+                    }
+                }
                 const result = verified.ok || confirmedIdentity
                     ? {ok:true,state:'saved',id:entry.id,url:current.record.url,record:current.record,
                         sourceCommitted:hasSource(), expectedSource:wanted,
@@ -1762,7 +1869,7 @@
             } catch (error) { return uncertain(error.message, { operationId: args.operationId, ...(entry?.id ? {id:entry.id} : {}) }); }
             }, true);
         }
-        return { prepare, dependencies, search, createRequest, readRequest, getAudioRecords, prepareClaim, saveClaim, prepareCancellation, saveCancellation, prepareNotTakenRequest, saveNotTakenRequest, saveRequest: args => update(args, false),
+        return { prepare, dependencies, readWorkCatalog, search, createRequest, readRequest, getAudioRecords, prepareClaim, saveClaim, prepareCancellation, saveCancellation, prepareNotTakenRequest, saveNotTakenRequest, saveRequest: args => update(args, false),
             reschedule: args => update(args, true), reconcile, draftToFields };
     }
     return { create, draftToFields, BASES, fieldNames: N, readVerifiedWithRetry, DEFAULT_VERIFY_DELAYS, _test: { isoDate, dateFor, normalizeValue, serialize, nativeSubmit } };

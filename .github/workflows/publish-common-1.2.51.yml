@@ -1,0 +1,281 @@
+name: Publish verified Common 1.2.51
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-common-1.2.51.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/cloud-common.yml
+    permissions:
+      contents: read
+      actions: read
+
+  publish:
+    if: github.repository == 'mirher228-droid/lead-partner-updates'
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 45
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      archive_sha256: ${{ steps.package.outputs.sha256 }}
+      archive_size: ${{ steps.package.outputs.size }}
+      setup_contents: ${{ steps.package.outputs.setup_contents }}
+      commit: ${{ github.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the exact Windows artifact from the required build job
+        id: tested
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadDirectory = Join-Path $env:RUNNER_TEMP ('verified-common-' + $env:GITHUB_RUN_ID)
+          [IO.Directory]::CreateDirectory($downloadDirectory) | Out-Null
+          gh run download $env:GITHUB_RUN_ID --repo $env:GH_REPO --name common-test-build --dir $downloadDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download the exact tested Windows artifact.' }
+          $files = @(Get-ChildItem -LiteralPath $downloadDirectory -File -Recurse)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'Lead-Partner-Common-1.2.51.zip') { throw 'The tested artifact must contain exactly the Common 1.2.51 ZIP.' }
+          "archive=$($files[0].FullName)" >> $env:GITHUB_OUTPUT
+          "run_id=$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+      - name: Run existing Windows PowerShell 5.1 updater tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($test in @('./tests/core-updater.tests.ps1','./tests/install-updater.tests.ps1','./tests/release-tests.ps1','./tests/silent-runner.tests.ps1','./tests/task-owner-migration.tests.ps1','./tests/resident-runner.tests.ps1','./tests/resident-migration.tests.ps1')) {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $test
+            if ($LASTEXITCODE -ne 0) { throw "Updater tests failed: $test" }
+          }
+      - name: Validate tested bytes against source and build channel assets
+        id: package
+        shell: pwsh
+        env:
+          TESTED_ARCHIVE: ${{ steps.tested.outputs.archive }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $metadata = Test-CommonArchive -ArchivePath $env:TESTED_ARCHIVE -Version '1.2.51' -ReleaseTag 'common-v1.2.51'
+          $archive = [IO.Compression.ZipFile]::OpenRead($env:TESTED_ARCHIVE)
+          try {
+            $inventoryReader = [IO.StreamReader]::new($archive.GetEntry('Lead-Partner-Common/ROOTRELEASE_FILES.json').Open())
+            try { $inventory = $inventoryReader.ReadToEnd() | ConvertFrom-Json } finally { $inventoryReader.Dispose() }
+            $sourceRoot = [IO.Path]::GetFullPath('./extension')
+            $sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Where-Object { [IO.Path]::GetRelativePath($sourceRoot,$_.FullName).Replace('\','/') -cne 'ROOTRELEASE_FILES.json' })
+            if ($sourceFiles.Count -ne $inventory.files.Count) { throw 'The tested ZIP and source checkout contain different file sets.' }
+            foreach ($item in $inventory.files) {
+              $source = Join-Path $sourceRoot $item.path
+              if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256) { throw ('Tested ZIP differs from this source commit: ' + $item.path) }
+            }
+          } finally { $archive.Dispose() }
+          $baselinePath = './releases/common-v1.2.50/Lead-Partner-Common-1.2.50.zip'
+          if ((Get-FileHash -LiteralPath $baselinePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne '52c256ea44901e57d6fd406131ec8a7a131afbc83d82a617ac139b6f78190a07') { throw 'The immutable Common 1.2.50 identity baseline changed.' }
+          $baselineArchive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $baselinePath).Path)
+          try {
+            $baselineReader = [IO.StreamReader]::new($baselineArchive.GetEntry('Lead-Partner-Common/manifest.json').Open())
+            try { $baseline = $baselineReader.ReadToEnd() | ConvertFrom-Json } finally { $baselineReader.Dispose() }
+          } finally { $baselineArchive.Dispose() }
+          $manifest = Get-Content -LiteralPath './extension/manifest.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          foreach ($name in @('key','permissions','optional_permissions','host_permissions','optional_host_permissions')) {
+            $beforeProperty = $baseline.PSObject.Properties[$name]
+            $afterProperty = $manifest.PSObject.Properties[$name]
+            $before = if ($null -eq $beforeProperty) { 'absent' } else { ConvertTo-Json -InputObject $beforeProperty.Value -Depth 20 -Compress }
+            $after = if ($null -eq $afterProperty) { 'absent' } else { ConvertTo-Json -InputObject $afterProperty.Value -Depth 20 -Compress }
+            if ($before -cne $after) { throw ('Extension identity or permissions changed: ' + $name) }
+          }
+          ./tools/Publish-Release.ps1 -ArchivePath $env:TESTED_ARCHIVE -Version '1.2.51' -ReleaseTag 'common-v1.2.51' -ExpectedSha256 $metadata.Sha256 -OutputDirectory './dist'
+          $setupArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path './dist' 'Lead-Partner-Common-AutoUpdate-Setup.zip'))
+          try {
+            $actualNames = @($setupArchive.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+            $expectedNames = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1') | Sort-Object
+            if ($actualNames.Count -ne 9 -or @(Compare-Object $actualNames $expectedNames -CaseSensitive).Count -ne 0) { throw 'Setup ZIP must contain exactly the nine approved updater files.' }
+          } finally { $setupArchive.Dispose() }
+          $setupContents = [ordered]@{}
+          foreach ($name in $expectedNames) { $setupContents[$name] = (Get-FileHash -LiteralPath (Join-Path './client' $name) -Algorithm SHA256).Hash.ToLowerInvariant() }
+          "sha256=$($metadata.Sha256)" >> $env:GITHUB_OUTPUT
+          "size=$($metadata.Size)" >> $env:GITHUB_OUTPUT
+          "setup_contents=$($setupContents | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
+      - name: Upload and verify all draft assets before stable activation
+        shell: pwsh
+        env:
+          TESTED_ARCHIVE: ${{ steps.tested.outputs.archive }}
+          EXPECTED_ARCHIVE_SHA256: ${{ steps.package.outputs.sha256 }}
+          EXPECTED_ARCHIVE_SIZE: ${{ steps.package.outputs.size }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'common-v1.2.51'
+          $setup = './dist/Lead-Partner-Common-AutoUpdate-Setup.zip'
+          $channel = './dist/update.json'
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the current stable release.' }
+          $latest = $latestJson | ConvertFrom-Json
+          if ($latest.tag_name -cne 'common-v1.2.50' -or $latest.draft -ne $false -or $latest.prerelease -ne $false) { throw 'The stable release changed; refusing to replace an unexpected channel.' }
+          $existingTags = @(gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm that the release tag is unused.' }
+          if ($existingTags -ccontains $tag) { throw 'This release already exists; published and draft assets will not be overwritten.' }
+          $refsJson = gh api "repos/$env:GH_REPO/git/matching-refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm that the Git tag is unused.' }
+          if (@($refsJson | ConvertFrom-Json | Where-Object { $_.ref -ceq ('refs/tags/' + $tag) }).Count -ne 0) { throw 'This Git tag already exists; refusing to reuse it.' }
+          if ((Get-FileHash -LiteralPath $env:TESTED_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:EXPECTED_ARCHIVE_SHA256 -or (Get-Item -LiteralPath $env:TESTED_ARCHIVE).Length -ne [int64]$env:EXPECTED_ARCHIVE_SIZE) { throw 'Archive bytes changed after Windows validation.' }
+          $notes = Get-Content -LiteralPath './docs/release-1.2.51.md' -Raw -Encoding UTF8
+          $marker = '<!-- release-notes:end -->'
+          $markerIndex = $notes.IndexOf($marker,[StringComparison]::Ordinal)
+          if ($markerIndex -lt 1) { throw 'Approved release notes were not found.' }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'common-1.2.51-notes.md'
+          [IO.File]::WriteAllText($notesPath,$notes.Substring(0,$markerIndex).Trim() + [Environment]::NewLine,[Text.UTF8Encoding]::new($false))
+          gh release create $tag $env:TESTED_ARCHIVE $setup $channel --repo $env:GH_REPO --draft --target $env:GITHUB_SHA --title 'Общая версия 1.2.51' --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { throw 'Draft upload failed; the previous stable channel remains active.' }
+          $uploadedJson = gh api "repos/$env:GH_REPO/releases/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the uploaded draft assets.' }
+          $uploaded = $uploadedJson | ConvertFrom-Json
+          $verifyDirectory = Join-Path $env:RUNNER_TEMP ('verify-common-1.2.51-' + $env:GITHUB_RUN_ID)
+          [IO.Directory]::CreateDirectory($verifyDirectory) | Out-Null
+          gh release download $tag --repo $env:GH_REPO --dir $verifyDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download draft assets; the draft remains unpublished.' }
+          foreach ($source in @($env:TESTED_ARCHIVE,$setup,$channel)) {
+            $download = Join-Path $verifyDirectory ([IO.Path]::GetFileName($source))
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash) { throw 'Draft asset hash mismatch; the draft remains unpublished.' }
+          }
+          $draftJson = gh api "repos/$env:GH_REPO/releases/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the verified draft.' }
+          $draft = $draftJson | ConvertFrom-Json
+          if ($draft.draft -ne $true -or $draft.prerelease -ne $false -or $draft.assets.Count -ne 3 -or $draft.tag_name -cne $tag -or $draft.target_commitish -cne $env:GITHUB_SHA) { throw 'Draft release metadata changed before publication.' }
+          $assetNames = @($draft.assets | ForEach-Object { [string]$_.name } | Sort-Object)
+          if (($assetNames -join '|') -cne 'Lead-Partner-Common-1.2.51.zip|Lead-Partner-Common-AutoUpdate-Setup.zip|update.json') { throw 'Unexpected draft asset names.' }
+          foreach ($asset in $draft.assets) {
+            $originalAsset = @($uploaded.assets | Where-Object { $_.name -ceq $asset.name })
+            if ($originalAsset.Count -ne 1 -or $asset.id -ne $originalAsset[0].id -or $asset.size -ne $originalAsset[0].size -or $asset.updated_at -cne $originalAsset[0].updated_at) { throw 'A draft asset changed during verification; the draft remains unpublished.' }
+          }
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0 -or ($latestJson | ConvertFrom-Json).tag_name -cne 'common-v1.2.50') { throw 'Another release became active during upload; the draft remains unpublished.' }
+          gh release edit $tag --repo $env:GH_REPO --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub did not confirm stable release publication.' }
+          $publishedJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the activated stable release.' }
+          $published = $publishedJson | ConvertFrom-Json
+          if ($published.tag_name -cne $tag -or $published.draft -ne $false -or $published.prerelease -ne $false -or $published.target_commitish -cne $env:GITHUB_SHA) { throw 'Activated release does not match the tested commit.' }
+          "Common 1.2.51 published from exact Windows build: https://github.com/$env:GH_REPO/actions/runs/${{ steps.tested.outputs.run_id }}" >> $env:GITHUB_STEP_SUMMARY
+
+  verify-channel:
+    name: Run existing channel publication and verify public downloads
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # The publish job has released common-update-release-channel before this
+    # job dispatches release-common.yml, whose publish job takes the same lock.
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+      EXPECTED_COMMIT: ${{ needs.publish.outputs.commit }}
+      EXPECTED_ARCHIVE_SHA256: ${{ needs.publish.outputs.archive_sha256 }}
+      EXPECTED_ARCHIVE_SIZE: ${{ needs.publish.outputs.archive_size }}
+      EXPECTED_SETUP_CONTENTS: ${{ needs.publish.outputs.setup_contents }}
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.publish.outputs.commit }}
+          persist-credentials: false
+      - name: Dispatch and await the existing release-common workflow on the release tag
+        id: existing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'common-v1.2.51'
+          $resolvedCommit = gh api "repos/$env:GH_REPO/commits/$tag" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $resolvedCommit -cne $env:EXPECTED_COMMIT) { throw 'The published tag does not resolve to the tested commit.' }
+          $beforeJson = gh run list --repo $env:GH_REPO --workflow release-common.yml --event workflow_dispatch --commit $env:EXPECTED_COMMIT --limit 100 --json databaseId
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect prior channel workflow runs.' }
+          $knownIds = @($beforeJson | ConvertFrom-Json | ForEach-Object { [string]$_.databaseId })
+          $dispatchAt = [DateTimeOffset]::FromUnixTimeSeconds([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+          gh workflow run release-common.yml --repo $env:GH_REPO --ref $tag -f "tag=$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot dispatch the required existing channel workflow.' }
+          $deadline = [DateTimeOffset]::UtcNow.AddMinutes(3)
+          $channelRun = $null
+          do {
+            $runsJson = gh run list --repo $env:GH_REPO --workflow release-common.yml --event workflow_dispatch --commit $env:EXPECTED_COMMIT --limit 100 --json databaseId,headSha,event,createdAt,status,conclusion
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the dispatched channel workflow.' }
+            $candidates = @($runsJson | ConvertFrom-Json | Where-Object { $_.event -ceq 'workflow_dispatch' -and $_.headSha -ceq $env:EXPECTED_COMMIT -and ([DateTimeOffset]$_.createdAt) -ge $dispatchAt -and [string]$_.databaseId -notin $knownIds })
+            if ($candidates.Count -gt 1) { throw 'More than one new exact-commit channel run appeared; refusing to guess which run to trust.' }
+            if ($candidates.Count -eq 1) { $channelRun = $candidates[0]; break }
+            Start-Sleep -Seconds 10
+          } while ([DateTimeOffset]::UtcNow -lt $deadline)
+          if ($null -eq $channelRun -or [string]$channelRun.databaseId -notmatch '^[1-9][0-9]*$') { throw 'The exact-commit channel workflow did not appear.' }
+          gh run watch $channelRun.databaseId --repo $env:GH_REPO --interval 10 --exit-status
+          if ($LASTEXITCODE -ne 0) { throw 'The existing release-common verification failed.' }
+          $completedJson = gh run view $channelRun.databaseId --repo $env:GH_REPO --json headSha,event,status,conclusion,jobs
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the completed channel jobs.' }
+          $completed = $completedJson | ConvertFrom-Json
+          $publishJobs = @($completed.jobs | Where-Object { $_.name -ceq 'Validate Common ZIP and publish channel assets' })
+          if ($completed.headSha -cne $env:EXPECTED_COMMIT -or $completed.event -cne 'workflow_dispatch' -or $completed.status -cne 'completed' -or $completed.conclusion -cne 'success' -or $publishJobs.Count -ne 1 -or $publishJobs[0].conclusion -cne 'success') { throw 'The exact channel publish job did not succeed.' }
+          "run_id=$($channelRun.databaseId)" >> $env:GITHUB_OUTPUT
+      - name: Verify latest stable metadata and anonymous channel, ZIP and setup downloads
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./tools/Release.Common.ps1
+          $tag = 'common-v1.2.51'
+          $latestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot confirm the final latest release.' }
+          $latest = $latestJson | ConvertFrom-Json
+          $metadata = Test-CommonReleaseMetadata -Release $latest -ExpectedTag $tag -LatestTag $latest.tag_name
+          if ($latest.target_commitish -cne $env:EXPECTED_COMMIT -or $metadata.AssetSize -ne [int64]$env:EXPECTED_ARCHIVE_SIZE) { throw 'Final release commit or archive metadata changed.' }
+          $assetNames = @($latest.assets | ForEach-Object { $_.name } | Sort-Object)
+          if (($assetNames -join '|') -cne 'Lead-Partner-Common-1.2.51.zip|Lead-Partner-Common-AutoUpdate-Setup.zip|update.json') { throw 'The final release must expose the three approved Common assets.' }
+          $verifyDirectory = Join-Path $env:RUNNER_TEMP ('public-common-1.2.51-' + $env:GITHUB_RUN_ID)
+          [IO.Directory]::CreateDirectory($verifyDirectory) | Out-Null
+          $channelPath = Join-Path $verifyDirectory 'update.json'
+          Invoke-WebRequest -Uri "https://github.com/$env:GH_REPO/releases/latest/download/update.json" -OutFile $channelPath -TimeoutSec 120
+          $channel = Get-Content -LiteralPath $channelPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $expectedArchiveUrl = "https://github.com/$env:GH_REPO/releases/download/$tag/Lead-Partner-Common-1.2.51.zip"
+          if ($channel.schema -ne 1 -or $channel.channel -cne 'common' -or $channel.repository -cne $env:GH_REPO -or $channel.version -cne '1.2.51' -or $channel.archive.url -cne $expectedArchiveUrl -or $channel.archive.sha256 -cne $env:EXPECTED_ARCHIVE_SHA256 -or $channel.archive.size -ne [int64]$env:EXPECTED_ARCHIVE_SIZE) { throw 'The public latest channel does not pin the tested Common archive.' }
+          $archivePath = Join-Path $verifyDirectory 'Lead-Partner-Common-1.2.51.zip'
+          Invoke-WebRequest -Uri $expectedArchiveUrl -OutFile $archivePath -TimeoutSec 120
+          if ((Get-Item -LiteralPath $archivePath).Length -ne [int64]$env:EXPECTED_ARCHIVE_SIZE) { throw 'The public archive size changed.' }
+          Test-CommonArchive -ArchivePath $archivePath -Version '1.2.51' -ReleaseTag $tag -ExpectedSha256 $env:EXPECTED_ARCHIVE_SHA256 | Out-Null
+          $setupPath = Join-Path $verifyDirectory 'Lead-Partner-Common-AutoUpdate-Setup.zip'
+          Invoke-WebRequest -Uri "https://github.com/$env:GH_REPO/releases/download/$tag/Lead-Partner-Common-AutoUpdate-Setup.zip" -OutFile $setupPath -TimeoutSec 120
+          $setup = [IO.Compression.ZipFile]::OpenRead($setupPath)
+          try {
+            $expectedNames = @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1') | Sort-Object
+            $actualNames = @($setup.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+            if ($actualNames.Count -ne 9 -or @(Compare-Object $actualNames $expectedNames -CaseSensitive).Count -ne 0) { throw 'The public setup contains unexpected files.' }
+            $expectedContents = $env:EXPECTED_SETUP_CONTENTS | ConvertFrom-Json
+            if (@($expectedContents.PSObject.Properties).Count -ne 9) { throw 'The Windows setup hash manifest is incomplete.' }
+            foreach ($name in $expectedNames) {
+              $stream = $setup.GetEntry($name).Open()
+              $algorithm = [Security.Cryptography.SHA256]::Create()
+              try { $hash = [Convert]::ToHexString($algorithm.ComputeHash($stream)).ToLowerInvariant() } finally { $algorithm.Dispose(); $stream.Dispose() }
+              if ($hash -cne $expectedContents.PSObject.Properties[$name].Value) { throw ('Public setup differs from the tested Windows client source: ' + $name) }
+            }
+          } finally { $setup.Dispose() }
+          $finalLatestJson = gh api "repos/$env:GH_REPO/releases/latest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot perform the final stable channel check.' }
+          $finalLatest = $finalLatestJson | ConvertFrom-Json
+          if ($finalLatest.tag_name -cne $tag -or $finalLatest.draft -ne $false -or $finalLatest.prerelease -ne $false -or $finalLatest.target_commitish -cne $env:EXPECTED_COMMIT) { throw 'Another release replaced the channel during verification.' }
+          $finalCommit = gh api "repos/$env:GH_REPO/commits/$tag" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $finalCommit -cne $env:EXPECTED_COMMIT) { throw 'The release tag moved during public verification.' }
+          "Common 1.2.51 stable release verified: https://github.com/$env:GH_REPO/releases/tag/$tag" >> $env:GITHUB_STEP_SUMMARY
+          "Existing channel workflow verified: https://github.com/$env:GH_REPO/actions/runs/${{ steps.existing.outputs.run_id }}" >> $env:GITHUB_STEP_SUMMARY
+          "Archive SHA-256: $env:EXPECTED_ARCHIVE_SHA256; bytes: $env:EXPECTED_ARCHIVE_SIZE." >> $env:GITHUB_STEP_SUMMARY
+          'Employees with the updater receive this package on their next check; installation waits for the browser to close completely.' >> $env:GITHUB_STEP_SUMMARY

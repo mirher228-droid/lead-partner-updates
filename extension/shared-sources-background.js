@@ -40,7 +40,7 @@
         if(data.stale===true)throw Error('Сервис каталога вернул резервную копию. Используется последний исправный или встроенный каталог.');
         const entries=LeadPartnerSourceCatalog.validate(data.entries),previous=(await chrome.storage.local.get(KEY))[KEY];
         if(previous?.endpoint===config.url&&data.revision<previous.revision)throw Error('Получена устаревшая версия каталога. Предыдущая версия сохранена.');
-        if(previous?.entries?.length>6&&entries.length<previous.entries.length/2)throw Error('Каталог резко уменьшился. Предыдущая версия сохранена.');
+        if(previous?.endpoint===config.url&&previous?.entries?.length>6&&entries.length<previous.entries.length/2)throw Error('Каталог резко уменьшился. Предыдущая версия сохранена.');
         const changed=JSON.stringify(entries)!==JSON.stringify(previous?.entries);
         // A fresh validated endpoint response remains authoritative when its revision is reused.
         const checkedAt=Date.now(),status={ok:true,endpoint:config.url,checkedAt,nextAutomaticAt:checkedAt+PERIOD,lastSuccessAt:checkedAt,updatedAt:data.updatedAt||'',revision:data.revision,count:entries.length};

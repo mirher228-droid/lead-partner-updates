@@ -79,20 +79,22 @@
     return matches;
   }
   function televisionService(context){return serviceMatches(context,SERVICE_FIELDS,[TELEVISION]).length>0;}
-  function explicitPrefixMatches(context){
+  function headerBaseMatches(context,requireSeparator=false){
     // Use the original account heading when present; truncated copies must not
     // turn a БТ/МНЧ identity into an apparently single-base identity.
     const field=['profileFullTitle','profileTitle','profileName'].find(key=>text(context?.[key]));
     if(!field)return [];
     const value=serviceText(context[field]),separator=value.search(/[·•|]/u);
-    if(separator<0)return [];
-    const prefix=value.slice(0,separator),matches=[];
+    if(requireSeparator&&separator<0)return [];
+    const prefix=separator<0?value:value.slice(0,separator),matches=[];
     for(const match of prefix.matchAll(/(?<![\p{L}\p{N}])(?:[кk][пp]|[мm][нh]ч|mnc|[бb][тt])(?![\p{L}\p{N}])/giu)){
       const term=match[0],base=/^[кk][пp]$/iu.test(term)?'kp':/^(?:[мm][нh]ч|mnc)$/iu.test(term)?'mnc':'bt';
       matches.push({base,category:'База в шапке',term,field});
     }
     return matches;
   }
+  function baseCandidates(context={}){return [...new Set(headerBaseMatches(context).map(item=>item.base))];}
+  function explicitPrefixMatches(context){return headerBaseMatches(context,true);}
   function resolveBase(context={},choices){
     const explicit=explicitPrefixMatches(context),explicitBases=[...new Set(explicit.map(item=>item.base))];
     if(explicitBases.length===1){const base=explicitBases[0];return {base,reason:'База явно указана в шапке: '+BASE_LABELS[base]+'.',reasonCode:'explicit-prefix',matched:explicit,conflict:false,requiresManual:false};}
@@ -127,7 +129,7 @@
   }
   const lines=value=>String(value??'').replace(/\r\n?/g,'\n').split('\n');
   const WHITE_LINE='🔴БЕЛАЯ ЗАЯВКА🔴';
-  function partnerNumber(value){const found=text(value).toLowerCase().match(/^(?:(?:парт|партнер)\s*[:№-]?\s*)?(\d+)(?=$|[^\d])/u);return found?found[1].replace(/^0+(?=\d)/u,''):'';}
+  function partnerNumber(value){const found=text(value).toLowerCase().match(/^(?:(?:парт|партнер)\s*(?:no\.?|[:№-])?\s*)?(\d+)(?=$|[^\d])/u);return found?found[1].replace(/^0+(?=\d)/u,''):'';}
   function whiteComment(value,partner){const body=lines(value).filter(v=>v.trim()!==WHITE_LINE).join('\n').trim();return partnerNumber(partner)==='723'?[WHITE_LINE,body].filter(Boolean).join('\n'):body;}
   function keepLines(value,required){const next=lines(value);for(const line of required||[])if(line&&!next.some(v=>v.trim()===line.trim()))next.push(line);return next.filter((v,i,a)=>v.trim()||i>0&&i<a.length-1).join('\n').trim();}
   function preserveBinding(previous,draft){
@@ -221,5 +223,5 @@
     while(remaining.length&&remaining.at(-1)==='')remaining.pop();
     return [remaining[0]||'',url.href,...remaining.slice(1)].join('\n');
   }
-  return Object.freeze({text,televisionService,resolveBase,sourceKey,specialSource,keepLines,preserveBinding,cancellationKind,requestReadOnly,removeCancellation,tagVisitHistory,cityMatches,routeCity,cityAlias,partnerNumber,whiteComment,withFreeVisit,serviceComment,WHITE_LINE});
+  return Object.freeze({text,televisionService,resolveBase,baseCandidates,sourceKey,specialSource,keepLines,preserveBinding,cancellationKind,requestReadOnly,removeCancellation,tagVisitHistory,cityMatches,routeCity,cityAlias,partnerNumber,whiteComment,withFreeVisit,serviceComment,WHITE_LINE});
 });
