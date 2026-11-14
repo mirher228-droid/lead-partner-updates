@@ -238,6 +238,8 @@ jobs:
           }
           $downloadedPayload = @{ArchivePath=(Join-Path $verifyDirectory 'Lead-Partner-Common-1.2.51.zip');SetupPath=(Join-Path $verifyDirectory 'Lead-Partner-Common-AutoUpdate-Setup.zip');ChannelPath=(Join-Path $verifyDirectory 'update.json');ExpectedArchiveSha256=$env:EXPECTED_ARCHIVE_SHA256;ExpectedArchiveSize=[int64]$env:EXPECTED_ARCHIVE_SIZE;ExpectedSetupContents=$freshPayload.ExpectedSetupContents}
           $readById = { param($id); return (Invoke-DraftRest 'GET' "repos/$env:GH_REPO/releases/$id") }
+          # Common.Draft proves both observed recovery states, then sends one
+          # explicit tag+target+activation PATCH. There is no preliminary retarget.
           $patchById = { param($id,$body); return (Invoke-DraftRest 'PATCH' "repos/$env:GH_REPO/releases/$id" $body) }
           function Get-ProductTrees([string]$Commit) {
             $commitData = Invoke-DraftRest 'GET' "repos/$env:GH_REPO/git/commits/$Commit"

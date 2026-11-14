@@ -61,14 +61,14 @@ function Fixture {
         $assets += [pscustomobject]@{name=[IO.Path]::GetFileName($path);id=[int64]$index;size=[int64](Get-Item -LiteralPath $path).Length;updated_at='2026-11-14T05:28:48Z';digest=('sha256:' + (File-Hash $path))}
         $index++
     }
-    $policy = [pscustomobject]@{ReleaseId=[int64]41;SourceCommit=('a' * 40);CreatedAt='2026-11-14T05:28:47Z';Assets=(Copy-Value $assets)}
+    $policy = [pscustomobject]@{ReleaseId=[int64]41;SourceCommit=('a' * 40);ObservedTag='untagged-f2b4962be5a405f2bea1';ObservedTarget=('c' * 40);CreatedAt='2026-11-14T05:28:47Z';Assets=(Copy-Value $assets)}
     $release = [pscustomobject]@{id=[int64]41;tag_name='common-v1.2.51';target_commitish=$policy.SourceCommit;draft=$true;prerelease=$false;created_at='2026-11-14T05:28:47Z';author=[pscustomobject]@{login='github-actions[bot]'};body="# Approved notes`nExact shared-panel release.";assets=$assets}
     $proof = @{CurrentCommit=('b' * 40);NotesPrefix="# Approved notes`nExact shared-panel release.";ExpectedArchiveSha256=$hash;ExpectedArchiveSize=[int64]$size;RecoveryPolicy=$policy}
     $payload = @{ArchivePath=$archive;SetupPath=$setup;ChannelPath=$channelPath;ExpectedArchiveSha256=$hash;ExpectedArchiveSize=[int64]$size;ExpectedSetupContents=[pscustomobject]$setupHashes}
     return [pscustomobject]@{Root=$root;Release=$release;Proof=$proof;Payload=$payload;Policy=$policy}
 }
 function Prepare-State($Fixture) {
-    $script:state = [pscustomobject]@{Release=(Copy-Value $Fixture.Release);Events=[Collections.Generic.List[string]]::new();Patches=[Collections.Generic.List[object]]::new();SourceSame=$true;ChannelReady=$true;TagExists=$false;ChangeStamp=$false}
+    $script:state = [pscustomobject]@{Release=(Copy-Value $Fixture.Release);Events=[Collections.Generic.List[string]]::new();Patches=[Collections.Generic.List[object]]::new();SourceSame=$true;ChannelReady=$true;TagExists=$false;ChangeStamp=$false;ObservedTag=$Fixture.Policy.ObservedTag}
 }
 $readRelease = {
     param($id)
@@ -82,11 +82,16 @@ $patchRelease = {
     param($id,$body)
     Assert ([int64]$id -eq [int64]$script:state.Release.id) 'Mutation used a foreign release ID.'
     $script:state.Patches.Add((Copy-Value ([pscustomobject]$body)))
-    if ($body.ContainsKey('target_commitish')) { $script:state.Events.Add('patch-target'); $script:state.Release.target_commitish = $body.target_commitish }
-    else {
-        Assert ($body.draft -eq $false -and $body.make_latest -is [string] -and $body.make_latest -ceq 'true') 'Publication must use draft=false and string make_latest=true.'
-        $script:state.Events.Add('patch-publish'); $script:state.Release.draft=$false
-    }
+    # This is the observed GitHub behavior, not a mock that silently preserves
+    # every unspecified field. Target-only PATCH changed our real draft tag.
+    if ($body.ContainsKey('target_commitish')) { $script:state.Release.target_commitish = $body.target_commitish }
+    if ($body.ContainsKey('tag_name')) { $script:state.Release.tag_name = $body.tag_name }
+    elseif ($body.ContainsKey('target_commitish')) { $script:state.Release.tag_name = $script:state.ObservedTag }
+    if ($body.ContainsKey('draft')) { $script:state.Release.draft = $body.draft }
+    if ($body.ContainsKey('make_latest')) { Assert ($body.make_latest -is [string] -and $body.make_latest -ceq 'true') 'make_latest must be the string true.' }
+    if ($body.ContainsKey('tag_name') -and $body.ContainsKey('target_commitish') -and $body.ContainsKey('draft')) { $script:state.Events.Add('patch-atomic-publish') }
+    elseif ($body.ContainsKey('target_commitish')) { $script:state.Events.Add('patch-target-only') }
+    else { $script:state.Events.Add('patch-other') }
     return (Copy-Value $script:state.Release)
 }
 $sourceProof = { param($before,$after); $script:state.Events.Add('source-proof'); return [bool]$script:state.SourceSame }
@@ -99,6 +104,7 @@ try {
     Check 'production recovery pins the exact known draft and assets' {
         $p=Get-CommonDraftRecoveryPolicy
         Assert ($p.ReleaseId -eq 445039752 -and $p.SourceCommit -ceq '9320ec40a3fdf85d0484392bdbcdfad204625112') 'Recovery release identity changed.'
+        Assert ($p.ObservedTag -ceq 'untagged-f2b4962be5a405f2bea1' -and $p.ObservedTarget -ceq '78541ea463fe385de555fa6a3b68c3a842f57638') 'Observed recovery pair changed.'
         Assert (($p.Assets.id -join ',') -ceq '746419755,746419753,746419751') 'Recovery asset IDs changed.'
         Assert ($p.Assets[0].digest -ceq 'sha256:492da594fe9791a37bfe4a9a235a792da56f6fb3dfb262704f758b408cf14dac' -and $p.Assets[0].size -eq 525177) 'Recovery archive proof changed.'
     }
@@ -108,8 +114,26 @@ try {
         Assert ($selected.id -eq 41 -and -not $script:state.TagExists) 'Draft selection requires an existing Git ref.'
         $result=Publish-Fixture $f
         Assert (-not $result.draft -and $result.target_commitish -ceq $f.Proof.CurrentCommit) 'Verified draft was not activated.'
-        Assert (($script:state.Events -join ',') -ceq 'read-id,source-proof,channel-proof,patch-target,read-id,channel-proof,patch-publish') 'Unexpected proof/mutation order.'
-        Assert ($script:state.Patches.Count -eq 2) 'Resume must only retarget and publish; assets must never be uploaded or replaced.'
+        Assert (($script:state.Events -join ',') -ceq 'read-id,source-proof,channel-proof,read-id,channel-proof,patch-atomic-publish') 'Unexpected proof/mutation order.'
+        Assert ($script:state.Patches.Count -eq 1) 'Resume must use exactly one atomic mutation.'
+        $patch=$script:state.Patches[0]
+        $fields=@($patch.PSObject.Properties.Name | Sort-Object)
+        Assert ($fields.Count -eq 4 -and ($fields -join ',') -ceq 'draft,make_latest,tag_name,target_commitish') 'Atomic publication must have exactly four explicit fields.'
+        Assert ($patch.tag_name -ceq 'common-v1.2.51' -and $patch.target_commitish -ceq $f.Proof.CurrentCommit -and $patch.draft -is [bool] -and $patch.draft -eq $false -and $patch.make_latest -is [string] -and $patch.make_latest -ceq 'true') 'Atomic publication fields were not explicitly pinned.'
+    }
+    Check 'negative control reproduces target-only PATCH changing the backend tag' {
+        $f=Fixture; $f.Proof.CurrentCommit=$f.Policy.ObservedTarget; Prepare-State $f; $proof=$f.Proof
+        $legacyReply=& $patchRelease $f.Release.id @{target_commitish=$f.Proof.CurrentCommit}
+        Assert ($legacyReply.tag_name -ceq $f.Policy.ObservedTag -and $legacyReply.draft) 'The API mock must reproduce the actual unpublished tag fallback.'
+        Rejected { Assert-CommonDraftMetadata -Release $legacyReply @proof -RequireCurrentTarget } 'tag|target|pair'
+        Assert ($script:state.Patches.Count -eq 1 -and $script:state.Events -notcontains 'patch-atomic-publish') 'The old split protocol unexpectedly published.'
+    }
+    Check 'the observed alias is selected by pinned ID and restored only by atomic publication' {
+        $f=Fixture; $f.Release.tag_name=$f.Policy.ObservedTag; $f.Release.target_commitish=$f.Policy.ObservedTarget; Prepare-State $f
+        $selected=Select-CommonDraftRelease -Releases @($f.Release) -Proof $f.Proof
+        Assert ($selected.id -eq 41 -and $selected.tag_name -ceq $f.Policy.ObservedTag) 'The pinned alias draft was ignored.'
+        $published=Publish-Fixture $f
+        Assert (-not $published.draft -and $published.tag_name -ceq 'common-v1.2.51' -and $published.target_commitish -ceq $f.Proof.CurrentCommit -and $script:state.Patches.Count -eq 1) 'Observed recovery did not use one approved transition.'
     }
     Check 'JSON API roundtrip and DateTime timestamps retain the same pinned UTC instant' {
         $f=Fixture
@@ -125,7 +149,11 @@ try {
         @{Name='prerelease';Change={param($r)$r.prerelease=$true};Pattern='state'},
         @{Name='foreign author';Change={param($r)$r.author.login='someone-else'};Pattern='author'},
         @{Name='foreign release ID';Change={param($r)$r.id=42};Pattern='ID'},
-        @{Name='foreign target';Change={param($r)$r.target_commitish=('c'*40)};Pattern='target'},
+        @{Name='foreign target';Change={param($r)$r.target_commitish=('d'*40)};Pattern='target'},
+        @{Name='canonical tag with observed intermediate target';Change={param($r)$r.target_commitish=('c'*40)};Pattern='pair'},
+        @{Name='arbitrary alias with observed target';Change={param($r)$r.tag_name='untagged-other';$r.target_commitish=('c'*40)};Pattern='pair'},
+        @{Name='observed alias with original target';Change={param($r)$r.tag_name='untagged-f2b4962be5a405f2bea1'};Pattern='pair'},
+        @{Name='observed alias with arbitrary intermediate';Change={param($r)$r.tag_name='untagged-f2b4962be5a405f2bea1';$r.target_commitish=('d'*40)};Pattern='pair'},
         @{Name='wrong notes';Change={param($r)$r.body='# Different release'};Pattern='notes'},
         @{Name='appended unapproved notes';Change={param($r)$r.body += "`nUnapproved suffix"};Pattern='notes'},
         @{Name='wrong asset name';Change={param($r)$r.assets[0].name='unexpected.zip'};Pattern='assets'},
@@ -143,6 +171,26 @@ try {
     Check 'duplicate matching drafts are never chosen by guess' {
         $f=Fixture
         Rejected { Select-CommonDraftRelease -Releases @($f.Release,(Copy-Value $f.Release)) -Proof $f.Proof } 'More than one'
+    }
+    Check 'a pinned alias plus another approved-tag release is a hard conflict' {
+        $f=Fixture; Prepare-State $f
+        $f.Release.tag_name=$f.Policy.ObservedTag;$f.Release.target_commitish=$f.Policy.ObservedTarget
+        $other=Copy-Value $f.Release;$other.id=77;$other.tag_name='common-v1.2.51';$other.target_commitish=$f.Proof.CurrentCommit
+        Rejected { Select-CommonDraftRelease -Releases @($f.Release,$other) -Proof $f.Proof } 'conflicting'
+        Assert ($script:state.Patches.Count -eq 0) 'Conflicting release selection caused a mutation.'
+    }
+    Check 'known ID with an arbitrary alias cannot disappear into fresh draft creation' {
+        $f=Fixture;$f.Release.tag_name='untagged-unknown'
+        Rejected { Select-CommonDraftRelease -Releases @($f.Release) -Proof $f.Proof } 'pair'
+    }
+    Check 'snapshots reject tag or target changes even between individually approved draft pairs' {
+        $f=Fixture;$changed=Copy-Value $f.Release
+        $changed.tag_name=$f.Policy.ObservedTag;$changed.target_commitish=$f.Policy.ObservedTarget
+        Rejected { Assert-CommonDraftAssetsUnchanged -Before $f.Release -After $changed } 'tag|target'
+    }
+    Check 'published metadata can never retain an alias tag' {
+        $f=Fixture;$proof=$f.Proof;$f.Release.draft=$false;$f.Release.tag_name=$f.Policy.ObservedTag;$f.Release.target_commitish=$f.Proof.CurrentCommit
+        Rejected { Assert-CommonDraftMetadata -Release $f.Release @proof -Published -RequireCurrentTarget } 'published tag'
     }
     Check 'changed asset stamp between download and reread blocks all mutations' {
         $f=Fixture; Prepare-State $f; $script:state.ChangeStamp=$true
@@ -168,10 +216,10 @@ try {
             Assert ($script:state.Patches.Count -eq 0) 'Changed stable channel caused a mutation.'
         }
     }
-    Check 'resume whose target is already current does not retarget again' {
+    Check 'an unobserved same-current state on the known ID is not legalized' {
         $f=Fixture; $f.Release.target_commitish=$f.Proof.CurrentCommit; Prepare-State $f
-        Publish-Fixture $f | Out-Null
-        Assert ($script:state.Patches.Count -eq 1 -and $script:state.Events -notcontains 'patch-target') 'Current target was unnecessarily rewritten.'
+        Rejected { Publish-Fixture $f } 'pair'
+        Assert ($script:state.Patches.Count -eq 0) 'An unknown prepared state was silently accepted.'
     }
     Check 'new draft requires explicit same-run ownership and still proves all payloads' {
         $f=Fixture; $f.Release.id=77; $f.Release.target_commitish=$f.Proof.CurrentCommit; Prepare-State $f

@@ -6,6 +6,8 @@ function Get-CommonDraftRecoveryPolicy {
     [pscustomobject]@{
         ReleaseId = [int64]445039752
         SourceCommit = '9320ec40a3fdf85d0484392bdbcdfad204625112'
+        ObservedTag = 'untagged-f2b4962be5a405f2bea1'
+        ObservedTarget = '78541ea463fe385de555fa6a3b68c3a842f57638'
         CreatedAt = '2026-11-14T05:28:47Z'
         Assets = @(
             [pscustomobject]@{name='Lead-Partner-Common-1.2.51.zip';id=[int64]746419755;size=[int64]525177;updated_at='2026-11-14T05:28:48Z';digest='sha256:492da594fe9791a37bfe4a9a235a792da56f6fb3dfb262704f758b408cf14dac'},
@@ -34,6 +36,15 @@ function Get-CommonDraftAuthor($Release) {
 
 function Get-CommonDraftNotes([string]$Value) { return $Value.Replace("`r`n","`n").Trim() }
 
+function Test-CommonDraftPreparedState {
+    param($Release,[string]$CurrentCommit,$RecoveryPolicy,[switch]$CreatedThisRun)
+    if ([int64]$Release.id -eq [int64]$RecoveryPolicy.ReleaseId) {
+        return [bool](($Release.tag_name -ceq 'common-v1.2.51' -and $Release.target_commitish -ceq $RecoveryPolicy.SourceCommit) -or
+            ($Release.tag_name -ceq $RecoveryPolicy.ObservedTag -and $Release.target_commitish -ceq $RecoveryPolicy.ObservedTarget))
+    }
+    return [bool]($CreatedThisRun -and $Release.tag_name -ceq 'common-v1.2.51' -and $Release.target_commitish -ceq $CurrentCommit)
+}
+
 function Get-CommonSetupNames {
     @('Updater.Core.ps1','Update-LeadPartner.ps1','Install-AutoUpdate.ps1','Install-AutoUpdate.bat','Uninstall-AutoUpdate.ps1','Uninstall-AutoUpdate.bat','README-RU.txt','SilentRunner.cs','Build-SilentRunner.ps1')
 }
@@ -51,7 +62,7 @@ function Assert-CommonDraftMetadata {
         [switch]$Published
     )
     if ($CurrentCommit -cnotmatch '^[a-f0-9]{40}$' -or $ExpectedArchiveSha256 -cnotmatch '^[a-f0-9]{64}$' -or $ExpectedArchiveSize -le 0) { throw 'Invalid draft proof inputs.' }
-    if ([string]$Release.id -notmatch '^[1-9][0-9]*$' -or $Release.tag_name -cne 'common-v1.2.51') { throw 'Unexpected draft ID or tag.' }
+    if ([string]$Release.id -notmatch '^[1-9][0-9]*$') { throw 'Unexpected draft ID.' }
     if ($Release.draft -isnot [bool] -or $Release.draft -ne (-not $Published.IsPresent) -or $Release.prerelease -isnot [bool] -or $Release.prerelease) { throw 'Release is not in the required draft/stable state.' }
     if ((Get-CommonDraftAuthor $Release) -cne 'github-actions[bot]') { throw 'Foreign draft author.' }
     $notes = Get-CommonDraftNotes ([string]$Release.body)
@@ -59,9 +70,12 @@ function Assert-CommonDraftMetadata {
     if (-not $prefix -or $notes -cne $prefix) { throw 'Draft notes do not match the approved body.' }
     $known = [int64]$Release.id -eq [int64]$RecoveryPolicy.ReleaseId
     if (-not $known -and -not $CreatedThisRun) { throw 'Foreign draft ID; only the pinned unpublished draft may resume.' }
-    $allowedTargets = @($CurrentCommit)
-    if ($known -and -not $RequireCurrentTarget) { $allowedTargets += $RecoveryPolicy.SourceCommit }
-    if ($allowedTargets -cnotcontains [string]$Release.target_commitish) { throw 'Foreign draft target commit.' }
+    if ($Published) {
+        if ($Release.tag_name -cne 'common-v1.2.51' -or $Release.target_commitish -cne $CurrentCommit) { throw 'Unexpected published tag or target commit.' }
+    } else {
+        if (-not (Test-CommonDraftPreparedState -Release $Release -CurrentCommit $CurrentCommit -RecoveryPolicy $RecoveryPolicy -CreatedThisRun:$CreatedThisRun)) { throw 'Unexpected draft tag/target pair.' }
+        if ($RequireCurrentTarget -and ($Release.tag_name -cne 'common-v1.2.51' -or $Release.target_commitish -cne $CurrentCommit)) { throw 'Draft does not use the approved current tag/target.' }
+    }
     $assets = @($Release.assets)
     $expectedNames = @('Lead-Partner-Common-1.2.51.zip','Lead-Partner-Common-AutoUpdate-Setup.zip','update.json') | Sort-Object
     $actualNames = @($assets | ForEach-Object { [string]$_.name } | Sort-Object)
@@ -85,7 +99,13 @@ function Assert-CommonDraftMetadata {
 
 function Select-CommonDraftRelease {
     param([AllowEmptyCollection()][object[]]$Releases,[hashtable]$Proof,[switch]$CreatedThisRun)
-    $matching = @($Releases | Where-Object { $_.tag_name -ceq 'common-v1.2.51' })
+    $policy = if ($Proof.ContainsKey('RecoveryPolicy')) { $Proof.RecoveryPolicy } else { Get-CommonDraftRecoveryPolicy }
+    $known = @($Releases | Where-Object { [int64]$_.id -eq [int64]$policy.ReleaseId })
+    if ($known.Count -gt 1) { throw 'More than one release uses the pinned ID.' }
+    $tagged = @($Releases | Where-Object { $_.tag_name -ceq 'common-v1.2.51' })
+    if ($known.Count -eq 1 -and @($tagged | Where-Object { [int64]$_.id -ne [int64]$policy.ReleaseId }).Count -gt 0) { throw 'A conflicting release already uses the approved tag.' }
+    $matching = @($tagged)
+    if ($known.Count -eq 1) { $matching = @($known) }
     if ($matching.Count -gt 1) { throw 'More than one release uses the requested tag.' }
     if ($matching.Count -eq 0) { return $null }
     Assert-CommonDraftMetadata -Release $matching[0] @Proof -CreatedThisRun:$CreatedThisRun
@@ -93,9 +113,11 @@ function Select-CommonDraftRelease {
 }
 
 function Assert-CommonDraftAssetsUnchanged {
-    param($Before,$After,[switch]$AllowTargetChange)
-    if ([int64]$Before.id -ne [int64]$After.id -or $Before.tag_name -cne $After.tag_name -or (Get-CommonDraftAuthor $Before) -cne (Get-CommonDraftAuthor $After) -or (Get-CommonDraftNotes $Before.body) -cne (Get-CommonDraftNotes $After.body)) { throw 'Draft identity or notes changed during verification.' }
-    if (-not $AllowTargetChange -and $Before.target_commitish -cne $After.target_commitish) { throw 'Draft target changed during verification.' }
+    param($Before,$After,[switch]$AllowPublishedTransition,[string]$CurrentCommit,$RecoveryPolicy=(Get-CommonDraftRecoveryPolicy),[switch]$CreatedThisRun)
+    if ([int64]$Before.id -ne [int64]$After.id -or (Get-CommonDraftAuthor $Before) -cne (Get-CommonDraftAuthor $After) -or (Get-CommonDraftNotes $Before.body) -cne (Get-CommonDraftNotes $After.body)) { throw 'Draft identity or notes changed during verification.' }
+    if ($AllowPublishedTransition) {
+        if ($CurrentCommit -cnotmatch '^[a-f0-9]{40}$' -or $Before.draft -ne $true -or $After.draft -ne $false -or $After.prerelease -ne $false -or $After.tag_name -cne 'common-v1.2.51' -or $After.target_commitish -cne $CurrentCommit -or -not (Test-CommonDraftPreparedState -Release $Before -CurrentCommit $CurrentCommit -RecoveryPolicy $RecoveryPolicy -CreatedThisRun:$CreatedThisRun)) { throw 'Unexpected published transition.' }
+    } elseif ($Before.tag_name -cne $After.tag_name -or $Before.target_commitish -cne $After.target_commitish) { throw 'Draft tag or target changed during verification.' }
     foreach ($old in $Before.assets) {
         $found = @($After.assets | Where-Object { $_.name -ceq $old.name })
         if ($found.Count -ne 1 -or [int64]$found[0].id -ne [int64]$old.id -or [int64]$found[0].size -ne [int64]$old.size -or (Get-CommonDraftTimeTicks $found[0].updated_at) -ne (Get-CommonDraftTimeTicks $old.updated_at)) { throw ('Draft asset changed during verification: ' + $old.name) }
@@ -168,19 +190,15 @@ function Invoke-CommonDraftPublication {
     }
     $channelProof = @(& $AssertChannelReady)
     if ($channelProof.Count -ne 1 -or $channelProof[0] -isnot [bool] -or -not $channelProof[0]) { throw 'The previous stable channel or free Git tag changed.' }
-    if ($current.target_commitish -cne $Proof.CurrentCommit) {
-        $updated = & $PatchRelease ([int64]$current.id) @{target_commitish=$Proof.CurrentCommit}
-        Assert-CommonDraftMetadata -Release $updated @Proof -CreatedThisRun:$CreatedThisRun -RequireCurrentTarget
-        Assert-CommonDraftAssetsUnchanged -Before $current -After $updated -AllowTargetChange
-        $current = $updated
-    }
     $ready = & $ReadRelease ([int64]$current.id)
-    Assert-CommonDraftMetadata -Release $ready @Proof -CreatedThisRun:$CreatedThisRun -RequireCurrentTarget
+    Assert-CommonDraftMetadata -Release $ready @Proof -CreatedThisRun:$CreatedThisRun
     Assert-CommonDraftAssetsUnchanged -Before $current -After $ready
     $channelProof = @(& $AssertChannelReady)
     if ($channelProof.Count -ne 1 -or $channelProof[0] -isnot [bool] -or -not $channelProof[0]) { throw 'Stable channel changed before activation.' }
-    $published = & $PatchRelease ([int64]$ready.id) @{draft=$false;make_latest='true'}
+    # GitHub changed an unpublished tag to an untagged alias on target-only
+    # PATCH. Supply the approved tag, target and activation in one operation.
+    $published = & $PatchRelease ([int64]$ready.id) @{tag_name='common-v1.2.51';target_commitish=$Proof.CurrentCommit;draft=$false;make_latest='true'}
     Assert-CommonDraftMetadata -Release $published @Proof -CreatedThisRun:$CreatedThisRun -RequireCurrentTarget -Published
-    Assert-CommonDraftAssetsUnchanged -Before $ready -After $published
+    Assert-CommonDraftAssetsUnchanged -Before $ready -After $published -AllowPublishedTransition -CurrentCommit $Proof.CurrentCommit -RecoveryPolicy $policy -CreatedThisRun:$CreatedThisRun
     return $published
 }
