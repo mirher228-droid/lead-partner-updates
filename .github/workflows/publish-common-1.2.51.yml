@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   build:
+    # Browser assertions use readiness-based Chromium startup on Windows;
+    # keep a failed startup diagnostic visible before any stable activation.
     uses: ./.github/workflows/cloud-common.yml
     permissions:
       contents: read

@@ -248,7 +248,8 @@ test('real inert HTML parser distinguishes native catalogues from generic error 
       document.getElementById('result').textContent=JSON.stringify({rows});
     })().catch(error=>document.getElementById('result').textContent=JSON.stringify({error:String(error)}));
   `;
-  let child,socket,debug='',counter=0;const pending=new Map();
+  const {waitForChromium}=require('./helpers/chromium-startup.cjs');
+  let child,socket,counter=0;const pending=new Map();
   const server=http.createServer((req,res)=>{
     const name=new URL(req.url,'http://localhost').pathname;
     if(name==='/'){res.setHeader('Content-Type','text/html');res.end('<script src="/leadchat-crm-html.js"></script><script src="/leadchat-crm-service.js"></script><pre id="result"></pre>');return;}
@@ -275,10 +276,8 @@ test('real inert HTML parser distinguishes native catalogues from generic error 
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   child=spawn(process.env.CHROMIUM_PATH||'/usr/bin/chromium',['--headless','--no-sandbox','--disable-dev-shm-usage','--disable-background-networking','--no-first-run','--remote-debugging-port=0','--user-data-dir='+path.join(folder,'profile'),'about:blank'],{stdio:['ignore','ignore','pipe']});
-  child.stderr.on('data',buffer=>{const match=buffer.toString().match(/DevTools listening on (ws:\/\/\S+)/);if(match)debug=match[1];});
-  for(let i=0;i<200&&!debug;i++)await sleep(25);assert.ok(debug,'Chromium available');
-  const targets=await(await fetch('http://'+new URL(debug).host+'/json/list')).json();
-  socket=new WebSocket(targets.find(target=>target.type==='page').webSocketDebuggerUrl);
+  const {page}=await waitForChromium({child,profileDir:path.join(folder,'profile'),timeoutMs:20000});
+  socket=new WebSocket(page.webSocketDebuggerUrl);
   await new Promise(resolve=>socket.addEventListener('open',resolve,{once:true}));
   socket.addEventListener('message',event=>{
     const message=JSON.parse(event.data),entry=pending.get(message.id);if(!entry)return;

@@ -2,7 +2,7 @@ name: Build Common from editable sources
 on:
   push:
     branches: [main]
-    paths: ['extension/**', 'tools/build_common.py', 'tests/test_cloud_build.py', '.github/workflows/cloud-common.yml']
+    paths: ['extension/**', 'tools/build_common.py', 'tools/*.cjs', 'tests/**', '.github/workflows/cloud-common.yml']
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -25,8 +25,27 @@ jobs:
         shell: pwsh
         run: |
           $env:CHROMIUM_PATH = Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'
-          node --test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $taskNodeLog = Join-Path $env:RUNNER_TEMP 'common-node-tests.log'
+          node --test --test-reporter=spec 2>&1 | Tee-Object -FilePath $taskNodeLog
+          $taskNodeExit = $LASTEXITCODE
+          if ($taskNodeExit -ne 0) {
+            $taskFailure = (Get-Content -LiteralPath $taskNodeLog -Tail 90) -join "`n"
+            if ($taskFailure.Length -gt 18000) { $taskFailure = $taskFailure.Substring($taskFailure.Length - 18000) }
+            for ($taskOffset = 0; $taskOffset -lt $taskFailure.Length; $taskOffset += 2000) {
+              $taskChunk = $taskFailure.Substring($taskOffset, [Math]::Min(2000, $taskFailure.Length - $taskOffset))
+              $taskEscaped = $taskChunk.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+              Write-Output "::error title=Common Node assertion details::$taskEscaped"
+            }
+            exit $taskNodeExit
+          }
+      - name: Retain failed Node diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: common-node-failure-log
+          path: ${{ runner.temp }}/common-node-tests.log
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Build and syntax-check Common
         run: python tools/build_common.py
       - name: Validate exact package with stable release policy
