@@ -1,0 +1,48 @@
+name: Diagnose Common 1.2.51 publication gate
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-common-1.2.51.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - name: Read the original failed Windows test step
+        run: gh run view 43561373433 --repo "$GH_REPO" --log-failed > original-windows-failure.log
+      - name: Expose assertion details for release diagnosis
+        shell: python
+        run: |
+          from pathlib import Path
+          import os
+          lines = Path('original-windows-failure.log').read_text().splitlines()
+          needles = ['not ok', '✖', 'AssertionError', 'ERR_ASSERTION', 'Timed out', 'failureType:', 'error:', 'expected:', 'actual:']
+          indexes = set(range(max(0,len(lines)-30),len(lines)))
+          for index,line in enumerate(lines):
+              if any(needle in line for needle in needles):
+                  indexes.update(range(max(0,index-2),min(len(lines),index+45)))
+          chosen = [lines[index] for index in sorted(indexes)]
+          if not chosen:
+              raise SystemExit('Original failure log is empty; diagnosis remains incomplete')
+          message = '\n'.join(lines[-90:])[-18000:]
+          chunks = [message[index:index+2000] for index in range(0,len(message),2000)]
+          for index,chunk in enumerate(chunks,1):
+              escaped = chunk.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+              print('::warning title=Original Windows failure tail '+str(index)+' of '+str(len(chunks))+'::'+escaped)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as stream:
+              stream.write('Original failed release build: run 43561373433, job 132345826652.\n\n```text\n'+message.replace('```','\u0060\u0060\u200b\u0060')+'\n```\n')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: original-common-windows-failure
+          path: original-windows-failure.log
+          retention-days: 3
