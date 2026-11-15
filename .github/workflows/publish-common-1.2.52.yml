@@ -1,0 +1,46 @@
+name: Publish Common 1.2.52 compatibility fix
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-common-1.2.52.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/cloud-common.yml
+  publish:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: common-test-build
+          path: tested
+      - name: Validate exact tested archive and produce updater metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/Publish-Release.ps1 -ArchivePath './tested/Lead-Partner-Common-1.2.52.zip' -Version '1.2.52' -ReleaseTag 'common-v1.2.52' -OutputDirectory './dist'
+          . ./tools/Release.Common.ps1
+          Test-CommonArchive -ArchivePath './tested/Lead-Partner-Common-1.2.52.zip' -Version '1.2.52' -ExpectedSha256 '1dd33c05ee4619a4cf3548bcf293e7acc0f6b362dd1894eea88686581b62f2e0'
+      - name: Publish verified stable package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create common-v1.2.52 ./tested/Lead-Partner-Common-1.2.52.zip ./dist/update.json ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip --target $env:GITHUB_SHA --latest --title 'Общая версия 1.2.52' --notes 'Восстановлено чтение данных новой сборки LeadChat. Добавлено точное распознавание 748 Источник номер 3. Настройки и учётные записи не изменяются. Обновлятор применяет файлы после полного закрытия браузера.'
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing assets were not overwritten.' }
+          gh workflow run release-common.yml --ref common-v1.2.52 -f tag=common-v1.2.52
+          if ($LASTEXITCODE -ne 0) { throw 'Channel validation dispatch failed.' }

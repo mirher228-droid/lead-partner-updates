@@ -117,7 +117,7 @@
     return text(value).toUpperCase().replace(/^(?:723\s+(?:ПАРТ(?:НЕР)?\s+)?)?БЕЛЫЙ\s+/u,'')
       .replace(/^748\s+ПАРТ(?:НЕР)?\s*[:\-]?\s*/u,'748 ')
       .replace(/ИСТОЧНИК(?:\s+ИСТОЧНИК)+/gu,'ИСТОЧНИК')
-      .replace(/([А-ЯA-Z])\s+(?=\d)/gu,'$1').replace(/ИСТОЧНИК\s*(?:NO|№|#)?\s*3$/u,'ИСТОЧНИК3')
+      .replace(/([А-ЯA-Z])\s+(?=\d)/gu,'$1').replace(/ИСТОЧНИК\s*(?:NO|НОМЕР|№|#)?\s*3$/u,'ИСТОЧНИК3')
       .replace(/^748 АВИТО(?:\s+ДБ)?$/u,'748 АВИТО ДБ');
   }
   function specialSource(raw,partner){

@@ -108,7 +108,19 @@
         if (!entry) throw new Error('Дождитесь загрузки интерфейса LeadChat.');
         // Import the same already-loaded app entry. Only its query cache and
         // projected own session ID/name/presence are read; credentials never cross worlds.
-        const values = Object.values(await import(entry.src));
+        let values = Object.values(await import(entry.src));
+        // New LeadChat builds keep the shared query cache in public-core.
+        if (!values.some(value => value && typeof value.getQueryData === 'function' && typeof value.getQueryCache === 'function')) {
+          const response = await fetch(entry.src, {credentials:'same-origin'});
+          if (!response.ok) throw new Error('Не удалось прочитать модуль LeadChat.');
+          const source = await response.text();
+          const dependency = source.match(/(?:from|import)\s*["'](\.\/public-core-[\w-]+\.js)["']/);
+          if (dependency) {
+            const coreUrl = new URL(dependency[1], entry.src);
+            if (coreUrl.origin !== win.location.origin) throw new Error('Некорректный модуль LeadChat.');
+            values = values.concat(Object.values(await import(coreUrl.href)));
+          }
+        }
         const client = values.find(value => value && typeof value.getQueryData === 'function' && typeof value.getQueryCache === 'function');
         const keys = values.find(value => typeof value?.conversations?.detail === 'function');
         const stores = values.filter(value => typeof value?.getState === 'function');

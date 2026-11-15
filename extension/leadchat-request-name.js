@@ -123,7 +123,19 @@
     async function perform() { try {
       const entry = [...document.querySelectorAll('script[type="module"][src]')].find(node => { try { const u = new URL(node.src, location.href); return u.origin === location.origin && /^\/assets\/(?:[\w.-]+\/)*index-[\w-]+\.js$/.test(u.pathname); } catch (_) { return false; } });
       if (!entry) return fail('unavailable', 'Интерфейс LeadChat ещё не загружен. Номер к имени не добавлен.');
-      const values = Object.values(await deadline(() => import(entry.src)));
+      let values = Object.values(await deadline(() => import(entry.src)));
+        // New LeadChat builds keep the shared query cache in public-core.
+        if (!values.some(value => value && typeof value.getQueryData === 'function' && typeof value.getQueryCache === 'function')) {
+          const response = await fetch(entry.src, {credentials:'same-origin'});
+          if (!response.ok) throw new Error('Не удалось прочитать модуль LeadChat.');
+          const source = await response.text();
+          const dependency = source.match(/(?:from|import)\s*["'](\.\/public-core-[\w-]+\.js)["']/);
+          if (dependency) {
+            const coreUrl = new URL(dependency[1], entry.src);
+            if (coreUrl.origin !== win.location.origin) throw new Error('Некорректный модуль LeadChat.');
+            values = values.concat(Object.values(await deadline(() => import(coreUrl.href))));
+          }
+        }
       client = values.find(value => value && typeof value.getQueryData === 'function' && typeof value.getQueryCache === 'function');
       keys = values.find(value => typeof value?.conversations?.detail === 'function');
       stores = values.filter(value => typeof value?.getState === 'function');
