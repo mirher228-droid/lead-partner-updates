@@ -47,3 +47,46 @@ test('initial catalogue is restored without a competing notification; invalid up
   assert.equal(f.api.revision,'11');
   assert.equal(f.api.entries[0].code,'stored');
 });
+
+const links624={
+  'К1':'https://www.avito.ru/brands/1fcce90ff0e4a6db02ba74c9bd908fe7',
+  'К2':'https://www.avito.ru/brands/5104951ac495be62f1b54d1a141616d7'
+};
+
+test('624 sources resolve with either alphabet and a complete department suffix', async () => {
+  const f=fixture();
+  const verify=()=>{
+    for(const [code,url] of Object.entries(links624)){
+      for(const alias of [code,'K'+code.slice(1),code+' МНЧ','K'+code.slice(1)+' (МНЧ/БТ)']){
+        const source=f.api.match(f.api.entries,alias,'624','mnc');
+        assert.equal(source?.code,code);
+        assert.equal(source?.partnerId,'624');
+        assert.equal(source?.url,url);
+        assert.equal(source?.externalIds.length,0);
+        assert.equal(source?.sourceBases.length,0);
+      }
+    }
+    for(const code of ['K11','К21','Новый К1','K2 другое']){
+      assert.equal(f.api.match(f.api.entries,code,'624','mnc'),null);
+    }
+    assert.equal(f.api.match(f.api.entries,'К1','7','mnc'),null);
+  };
+  verify();
+  f.finish({revision:764,entries:[entry('С77')]});
+  await f.api.ready();
+  verify();
+  assert.equal(f.api.entries[0].code,'С77');
+  assert.equal(f.api.entries.length,3);
+});
+
+test('confirmed shared mappings in either alphabet take priority for 624', async () => {
+  const f=fixture();
+  f.finish({revision:765,entries:[{...entry('K1'),partnerId:'624'},entry('С77')]});
+  await f.api.ready();
+  assert.equal(f.api.match(f.api.entries,'К1 МНЧ','624','mnc')?.url,entry('K1').url);
+  assert.equal(f.api.match(f.api.entries,'К2','624','mnc')?.url,links624['К2']);
+  assert.equal(f.api.entries.filter(value=>value.code==='K1' || value.code==='К1').length,1);
+  f.notify({revision:766,entries:[{...entry('К1'),partnerId:'7'},entry('С77')]});
+  assert.equal(f.api.match(f.api.entries,'К1','624','mnc'),null);
+  assert.equal(f.api.match(f.api.entries,'K1','7','mnc')?.url,new URL(entry('К1').url).href);
+});

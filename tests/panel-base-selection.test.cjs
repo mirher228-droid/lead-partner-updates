@@ -42,5 +42,19 @@ test('actual panel base selection preserves precedence, retries and identity bou
  await t.test('unknown evidence leaves the base blank rather than guessing',async()=>{await open('unknown');await cdp.until('baseHarness.count("resolveBase")===1');await sleep(50);assert.equal(await cdp.eval('baseHarness.base()'),'');assert.equal(await cdp.eval('baseHarness.count("getMetadata")'),0);});
  await t.test('an existing named card keeps its native base over semantic advertisement hints',async()=>{await open('named-found');await cdp.until('baseHarness.ready("bt")');assert.equal(await cdp.eval('baseHarness.count("getRequest")'),1);assert.equal(await cdp.eval('baseHarness.count("resolveBase")'),0);});
  await t.test('the television policy uses KP and a saved manual choice still has precedence',async()=>{await open('tv');await cdp.until('baseHarness.ready("kp")');assert.equal(await cdp.eval('baseHarness.count("resolveBase")'),0);await open('saved-choice');await cdp.until('baseHarness.ready("mnc")');assert.equal(await cdp.eval('baseHarness.count("resolveBase")'),0);});
+ await t.test('624 source chosen from the live panel sends an automatic review flag',async()=>{
+  await open('partner624');
+  await cdp.until('baseHarness.ready("mnc") && !document.getElementById("create-request").disabled');
+  const url='https://www.avito.ru/brands/1fcce90ff0e4a6db02ba74c9bd908fe7';
+  assert.equal(await cdp.eval('document.getElementById("auto-source-link").href'),url);
+  await cdp.eval('document.getElementById("time").value="12:30";document.getElementById("date").value="2030-12-01"');
+  await press('#create-request');
+  await cdp.until('!!baseHarness.creation');
+  const {draft,body}=await cdp.eval('baseHarness.creation');
+  assert.equal(draft.partnerId,'91');
+  assert.equal(draft.sourceCode,'К1');
+  assert.equal(draft.sourceUrl,url);
+  assert.equal(body['CustomerRequest[is_req_fback]'],'1');
+ });
  assert.deepEqual(await cdp.eval('baseHarness.errors'),[]);
 });

@@ -12,6 +12,7 @@
   if(scenario==='metadata-pending')context.baseCandidates=['bt'];
   if(scenario==='tv' || scenario==='saved-choice')context.workTitle='Ремонт телевизора';
   if(scenario==='record'){context.base='bt';context.baseCandidates=['bt'];}
+  if(scenario==='partner624')Object.assign(context,{base:'mnc',baseCandidates:['mnc'],partnerNumber:'624',sourceCode:'K1 МНЧ',phone:'9000000000'});
   const items={},calls=[],errors=[],pending=[];
   const h={scenario,context,items,calls,errors,pending,result:{ok:false,reason:'No unique base'},deferred:['identity','manual','dirty'].includes(scenario)};
   if(['named','retry','phone','source','named-update'].includes(scenario))h.result={ok:false,reason:'Transient offline failure'};
@@ -25,6 +26,15 @@
   const metadata=base=>({ok:true,form:{fields:[{name:'CustomerRequest[comments]',type:'textarea',label:'Комментарий'}],values:{}},
     lists:{cities:[{id:base==='mnc'?'2':'1',label:'Москва'}],types:[{id:'1',label:'Впервые'}],workTypes:[{id:base==='mnc'?'9':'1',label:'Ремонт'}]},defaults:{},sources:[],
     ...(scenario==='record' || scenario==='named-found'?{record:record(base)}:{})});
+  function metadata624(base){
+    const meta=metadata(base),catalog=window.LeadPartnerSourceCatalog;
+    const source=catalog.match(catalog.entries,context.sourceCode,context.partnerNumber,base);
+    meta.form.fields.push({name:'CustomerRequest[is_req_fback]',type:'checkbox',label:'Отзыв',value:'0',checked:false});
+    meta.lists.partners=[{id:'91',label:'Партнёр 624'}];
+    meta.sources=catalog.entries;
+    meta.defaults={cityId:'2',workId:'9',requestType:'1',partnerId:'91',sourceCode:source?.code,sourceUrl:source?.url};
+    return meta;
+  }
   const log=(command,args)=>{calls.push({command,at:performance.now(),context:copy(args.context),base:args.base,id:args.id,refresh:args.refresh===true});};
   window.fetch=async()=>{throw Error('Real network forbidden in base-selection fixture');};
   window.addEventListener('error',event=>errors.push(event.message));
@@ -33,10 +43,18 @@
     async resolveBase(args){log('resolveBase',args);if(h.deferred)return new Promise(resolve=>pending.push(resolve));return copy(h.result);},
     async getRequest(args){log('getRequest',args);if(scenario==='named-pending')return new Promise(resolve=>pending.push(resolve));await sleep(90);return scenario==='named-found'?{ok:true,verified:true,record:record('bt')}:{ok:false,error:'No verified named record'};},
     async duplicates(args){log('duplicates',args);return {ok:true,matches:[]};},
-    async getMetadata(args){log('getMetadata',args);if(scenario==='metadata-pending')return new Promise(resolve=>pending.push(resolve));return metadata(args.base || args.draft?.base);},
+    async getMetadata(args){log('getMetadata',args);if(scenario==='metadata-pending')return new Promise(resolve=>pending.push(resolve));return (scenario==='partner624'?metadata624:metadata)(args.base || args.draft?.base);},
     async getDependencies(){return {ok:true,works:[],services:[]};},
     async getOperationStatus(){return {ok:true,operation:scenario==='operation'?{operationId:'held-operation',kind:'create',state:'uncertain'}:null};},
-    async createRequest(){throw Error('Unexpected CRM mutation');},
+    async createRequest(args){
+      if(scenario!=='partner624')throw Error('Unexpected CRM mutation');
+      const meta=metadata624(args.draft.base);
+      const crm=window.LeadChatCrmService;
+      const fields=crm.draftToFields(args.draft,meta);
+      const body=crm._test.serialize(meta.form,fields,{param:'_csrf',token:'synthetic'});
+      h.creation={draft:copy(args.draft),body:Object.fromEntries(body)};
+      return {ok:false,state:'rejected',safeToRetry:true,writeStarted:false,error:'Synthetic fixture never writes to CRM'};
+    },
     async performAction(){throw Error('Unexpected CRM mutation');}
   };
   const storage={async get(key){return copy(items[key] || null);},async set(key,value){items[key]=copy(value);}};

@@ -38,14 +38,18 @@
         if(data?.ok===false)throw Error(serviceError(data.error)||'Сервис каталога сообщил об ошибке.');
         if(data?.ok!==true||data.schema!==1||!Number.isSafeInteger(data.revision)||data.revision<1)throw Error('Неподтверждённая версия общего каталога.');
         if(data.stale===true)throw Error('Сервис каталога вернул резервную копию. Используется последний исправный или встроенный каталог.');
-        const entries=LeadPartnerSourceCatalog.validate(data.entries),previous=(await chrome.storage.local.get(KEY))[KEY];
+        const {entries,blockedAdditions,effectiveEntries}=LeadPartnerSourceCatalog.sharedSnapshot(data.entries);
+        const previous=(await chrome.storage.local.get(KEY))[KEY];
         if(previous?.endpoint===config.url&&data.revision<previous.revision)throw Error('Получена устаревшая версия каталога. Предыдущая версия сохранена.');
         if(previous?.endpoint===config.url&&previous?.entries?.length>6&&entries.length<previous.entries.length/2)throw Error('Каталог резко уменьшился. Предыдущая версия сохранена.');
-        const changed=JSON.stringify(entries)!==JSON.stringify(previous?.entries);
+        const changed=JSON.stringify(entries)!==JSON.stringify(previous?.entries) ||
+          JSON.stringify(blockedAdditions)!==JSON.stringify(previous?.blockedAdditions || []);
         // A fresh validated endpoint response remains authoritative when its revision is reused.
-        const checkedAt=Date.now(),status={ok:true,endpoint:config.url,checkedAt,nextAutomaticAt:checkedAt+PERIOD,lastSuccessAt:checkedAt,updatedAt:data.updatedAt||'',revision:data.revision,count:entries.length};
-        if(changed||previous?.revision!==data.revision||previous?.endpoint!==config.url){await chrome.storage.local.set({[KEY]:{entries,revision:data.revision,endpoint:config.url,updatedAt:data.updatedAt||'',receivedAt:Date.now()},...(changed?{partnerLinksCache:entries}:{}),[STATE]:status});LeadPartnerSourceCatalog.setEntries(entries,data.revision);}
-        else await chrome.storage.local.set({[STATE]:status});
+        const checkedAt=Date.now(),status={ok:true,endpoint:config.url,checkedAt,nextAutomaticAt:checkedAt+PERIOD,lastSuccessAt:checkedAt,updatedAt:data.updatedAt||'',revision:data.revision,count:effectiveEntries.length};
+        if(changed||previous?.revision!==data.revision||previous?.endpoint!==config.url){
+          await chrome.storage.local.set({[KEY]:{entries,blockedAdditions,revision:data.revision,endpoint:config.url,updatedAt:data.updatedAt||'',receivedAt:Date.now()},...(changed?{partnerLinksCache:effectiveEntries}:{}),[STATE]:status});
+          LeadPartnerSourceCatalog.setEntries(entries,data.revision,blockedAdditions);
+        }else await chrome.storage.local.set({[STATE]:status});
         return result(config,status,true);
       }catch(error){
         const status=await failedStatus(config,'Обновление не выполнено. Используется последний исправный или встроенный каталог.');

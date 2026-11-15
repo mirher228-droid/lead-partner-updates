@@ -1,4 +1,4 @@
-/* Complete catalogue explicitly supplied by the owner on 2026-11-07. */
+/* Owner catalogue from 2026-11-07 with approved additions for partner 624. */
 (()=>{'use strict';
 const entries=[
   {
@@ -819,9 +819,29 @@ const entries=[
         "base": "bt"
       }
     ]
+  },
+  {
+    "code": "К1",
+    "partnerId": "624",
+    "url": "https://www.avito.ru/brands/1fcce90ff0e4a6db02ba74c9bd908fe7",
+    "aliases": ["K1"],
+    "additive": true,
+    "externalIds": [],
+    "sourceBases": [],
+    "externalRefs": []
+  },
+  {
+    "code": "К2",
+    "partnerId": "624",
+    "url": "https://www.avito.ru/brands/5104951ac495be62f1b54d1a141616d7",
+    "aliases": ["K2"],
+    "additive": true,
+    "externalIds": [],
+    "sourceBases": [],
+    "externalRefs": []
   }
 ];
-const api=Object.freeze({revision:'owner-approved-2026-11-07-full-49',authoritative:true,entries:Object.freeze(entries.map(entry=>Object.freeze({...entry,externalIds:Object.freeze(entry.externalIds),sourceBases:Object.freeze(entry.sourceBases),externalRefs:Object.freeze(entry.externalRefs.map(Object.freeze))})))});
+const api=Object.freeze({revision:'owner-approved-2026-11-07-full-49',authoritative:true,entries:Object.freeze(entries.map(entry=>Object.freeze({...entry,...(entry.aliases?{aliases:Object.freeze(entry.aliases)}:{}),externalIds:Object.freeze(entry.externalIds),sourceBases:Object.freeze(entry.sourceBases),externalRefs:Object.freeze(entry.externalRefs.map(Object.freeze))})))});
 globalThis.CRMAvitoOwnerSources=api;
 if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })();

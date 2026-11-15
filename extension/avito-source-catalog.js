@@ -13,11 +13,14 @@
     for(const ref of refs.length?refs:[{base:''}])for(const base of ref.base?[ref.base]:entry.sourceBases.length?entry.sourceBases:[''])bases.add(base);
     return bases;
   }
+  function inactive(value){
+    return value?.manualDeleted || value?.confirmed===false || value?.status && value.status!=='active';
+  }
   function validate(input){
     if(!Array.isArray(input)||!input.length||input.length>2500)throw Error('Некорректный общий каталог.');
     const owners=new Map();
     for(const value of input){
-      if(value?.manualDeleted||value?.confirmed===false||value?.status&&value.status!=='active')continue;
+      if(inactive(value))continue;
       const rawCode=String(value?.code||value?.label||'').trim(),special=rules.specialSource(rawCode),code=special?.code||rawCode;let url;
       try{url=new URL(String(value?.url||''));}catch(_){throw Error('Некорректная ссылка источника.');}
       if(!code||code.length>120||/[<>\u0000-\u001f]/u.test(code)||url.protocol!=='https:'||url.username||url.password||url.port||url.href.length>2000)throw Error('Некорректная запись источника.');
@@ -48,8 +51,39 @@
     // Reused numeric IDs are ambiguous lookup keys, not invalid named sources.
     return Object.freeze(out.map(value=>Object.freeze({...value,externalIds:Object.freeze(value.externalIds),externalRefs:Object.freeze(value.externalRefs.map(Object.freeze)),sourceBases:Object.freeze(value.sourceBases),aliases:Object.freeze(value.aliases)})));
   }
-  function setEntries(values,nextRevision){const next=validate(values);updates++;revision=String(nextRevision||'local');if(JSON.stringify(next)===JSON.stringify(entries))return false;entries=next;for(const fn of listeners)try{fn(entries)}catch(_){}return true;}
   entries=validate(seed.entries);
+  const additiveCodes=new Set(seed.entries.filter(value=>value.additive===true).map(value=>value.code));
+  const additions=entries.filter(value=>additiveCodes.has(value.code));
+  const additionsByAlias=new Map(additions.flatMap(value=>value.aliases.map(alias=>[key(alias),value])));
+  function claimAdditions(values,claimed){
+    for(const value of values){
+      const aliases=Array.isArray(value?.aliases)?value.aliases:[];
+      for(const name of [value?.code,value?.label,...aliases]){
+        const addition=additionsByAlias.get(key(name));
+        if(addition)claimed.add(addition.code);
+      }
+    }
+  }
+  function sharedSnapshot(values,storedBlocked=[]){
+    const entries=validate(values);
+    const blocked=new Set(Array.isArray(storedBlocked)?storedBlocked:[]);
+    claimAdditions(values.filter(inactive),blocked);
+    // Inactive rows are removed by validation. Keep their scoped exclusions
+    // with the cached snapshot so a restart cannot resurrect a bundled source.
+    const blockedAdditions=[...additiveCodes].filter(code=>blocked.has(code));
+    const claimed=new Set(blockedAdditions);
+    claimAdditions(entries,claimed);
+    const effectiveEntries=Object.freeze([...entries,...additions.filter(value=>!claimed.has(value.code))]);
+    return {entries,blockedAdditions,effectiveEntries};
+  }
+  function setEntries(values,nextRevision,blockedAdditions){
+    const next=sharedSnapshot(values,blockedAdditions).effectiveEntries;
+    updates++;revision=String(nextRevision||'local');
+    if(JSON.stringify(next)===JSON.stringify(entries))return false;
+    entries=next;
+    for(const fn of listeners)try{fn(entries)}catch(_){}
+    return true;
+  }
   function index(catalog,base){
     if(!indexes.has(catalog))indexes.set(catalog,new Map());const cached=indexes.get(catalog),scope=BASES.includes(base)?base:'';if(cached.has(scope))return cached.get(scope);
     const map=new Map();
@@ -60,6 +94,16 @@
     }
     cached.set(scope,map);return map;
   }
+  function matchNamed(sources,normalized,partner){
+    const addition=additionsByAlias.get(normalized);
+    let source=sources.get(normalized);
+    if(addition&&!sources.has(normalized)){
+      const alternate=addition.aliases.find(alias=>key(alias)!==normalized);
+      source=sources.get(key(alternate));
+    }
+    if(addition&&source?.partnerId&&rules.partnerNumber(partner)!==source.partnerId)return null;
+    return source||null;
+  }
   function match(catalog,raw,partner,base){
     if(!Array.isArray(catalog))return null;const special=rules.specialSource(raw,partner);
     if(special)return catalog.find(v=>key(v.code)===key(special.code))||null;
@@ -67,7 +111,7 @@
     if(!normalized)return null;
     const sources=index(catalog,base);
     // An exact identity, including a conflicting alias, always takes priority.
-    if(sources.has(normalized))return sources.get(normalized)||null;
+    if(sources.has(normalized)||additionsByAlias.has(normalized))return matchNamed(sources,normalized,partner);
     // LeadChat may append the department to a source label. Strip only that
     // complete annotation; never search arbitrary text for a partial code.
     const bare=normalized.replace(/(?:\s+|\s*[-–—/]\s*|\s*(?=\())(?:(?:КП|МНЧ|БТ)(?:\s*[/+]\s*(?:КП|МНЧ|БТ))*|\((?:КП|МНЧ|БТ)(?:\s*[/+]\s*(?:КП|МНЧ|БТ))*\))$/u,'');
@@ -75,11 +119,11 @@
     const named=rules.specialSource(bare,partner);
     if(named)return catalog.find(v=>key(v.code)===key(named.code))||null;
     // The remainder must itself be an exact, unambiguous registered alias.
-    return sources.get(bare)||null;
+    return matchNamed(sources,bare,partner);
   }
-  function ready(){if(!loaded)loaded=(async()=>{if(!globalThis.chrome?.storage?.local)return;try{const before=updates,value=(await chrome.storage.local.get(KEY))[KEY];if(before===updates&&value?.entries)setEntries(value.entries,value.revision);}catch(_){}})();return loaded;}
-  const api={get entries(){return entries},get revision(){return revision},key,match,validate,setEntries,ready,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)}};
+  function ready(){if(!loaded)loaded=(async()=>{if(!globalThis.chrome?.storage?.local)return;try{const before=updates,value=(await chrome.storage.local.get(KEY))[KEY];if(before===updates&&value?.entries)setEntries(value.entries,value.revision,value.blockedAdditions);}catch(_){}})();return loaded;}
+  const api={get entries(){return entries},get revision(){return revision},key,match,validate,sharedSnapshot,setEntries,ready,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)}};
   globalThis.LeadPartnerSourceCatalog=Object.freeze(api);
-  if(globalThis.chrome?.storage?.onChanged){chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&changes[KEY]?.newValue?.entries)try{setEntries(changes[KEY].newValue.entries,changes[KEY].newValue.revision)}catch(_){}});void ready();}
+  if(globalThis.chrome?.storage?.onChanged){chrome.storage.onChanged.addListener((changes,area)=>{const value=changes[KEY]?.newValue;if(area==='local'&&value?.entries)try{setEntries(value.entries,value.revision,value.blockedAdditions)}catch(_){}});void ready();}
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })();

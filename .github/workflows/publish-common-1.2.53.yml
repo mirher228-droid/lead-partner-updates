@@ -1,0 +1,52 @@
+name: Publish Common 1.2.53 partner 624
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-common-1.2.53.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/cloud-common.yml
+  publish:
+    if: github.repository == 'mirher228-droid/lead-partner-updates'
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    concurrency:
+      group: common-update-release-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: mirher228-droid/lead-partner-updates
+      COMMON_VERSION: '1.2.53'
+      COMMON_TAG: common-v1.2.53
+      COMMON_ARCHIVE: './tested/Lead-Partner-Common-1.2.53.zip'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: common-test-build
+          path: tested
+      - name: Validate exact tested archive and produce updater metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveHash = (Get-FileHash -LiteralPath $env:COMMON_ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant()
+          ./tools/Publish-Release.ps1 -ArchivePath $env:COMMON_ARCHIVE -Version $env:COMMON_VERSION -ReleaseTag $env:COMMON_TAG -ExpectedSha256 $archiveHash -OutputDirectory './dist'
+      - name: Publish verified stable package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $channel = Get-Content -LiteralPath './dist/update.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          . ./tools/Release.Common.ps1
+          Test-CommonArchive -ArchivePath $env:COMMON_ARCHIVE -Version $env:COMMON_VERSION -ReleaseTag $env:COMMON_TAG -ExpectedSha256 $channel.archive.sha256 | Out-Null
+          gh release create $env:COMMON_TAG $env:COMMON_ARCHIVE ./dist/update.json ./dist/Lead-Partner-Common-AutoUpdate-Setup.zip --target $env:GITHUB_SHA --latest --title 'Общая версия 1.2.53' --notes 'Добавлены ссылки на источники К1 и К2 партнёра 624 и автоматическая отметка для отзыва. Обновлятор применяет файлы после полного закрытия браузера.'
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing assets were not overwritten.' }
+          gh workflow run release-common.yml --ref $env:COMMON_TAG -f "tag=$env:COMMON_TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Channel validation dispatch failed.' }

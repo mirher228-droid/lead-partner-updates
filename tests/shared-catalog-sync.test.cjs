@@ -21,14 +21,35 @@ async function fixture(){
   assert.equal(listeners[0]({type:'LP_SHARED_SOURCES',command,url},{id:'fixture',url:'chrome-extension://fixture/popup.html'},resolve),true);
  });
  await send('sync');
- return {data,responses,send,api:sandbox.LeadPartnerSourceCatalog};
+ async function reloadCatalogue(){
+  const reader=vm.createContext({URL,console,chrome});
+  for(const name of ['leadpartner-rules.js','crm-avito-owner-sources.js','avito-source-catalog.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../extension',name),'utf8'),reader,{filename:name});
+  await reader.LeadPartnerSourceCatalog.ready();
+  return reader.LeadPartnerSourceCatalog;
+ }
+ return {data,responses,send,reloadCatalogue,api:sandbox.LeadPartnerSourceCatalog};
 }
 test('explicit new catalogue endpoint can legitimately start with fewer entries and lower revision',async()=>{
  const f=await fixture(),result=await f.send('configure',endpoint('new'));
  assert.equal(result.ok,true);assert.equal(f.data[KEY].endpoint,endpoint('new'));
- assert.equal(f.api.entries.length,2);assert.equal(f.api.entries[0].code,'new0');
+ assert.equal(f.api.entries.length,4);assert.equal(f.api.entries[0].code,'new0');
 });
 test('same endpoint still rejects drastic shrink and retains verified catalogue',async()=>{
  const f=await fixture();f.responses.set(endpoint('old'),{ok:true,schema:1,revision:13,entries:entries('old',2)});
- const result=await f.send('sync');assert.equal(result.ok,false);assert.equal(f.api.entries.length,12);assert.equal(f.data[KEY].revision,12);
+ const result=await f.send('sync');assert.equal(result.ok,false);assert.equal(f.api.entries.length,14);assert.equal(f.data[KEY].revision,12);
+});
+test('an explicitly inactive or deleted 624 shared record disables its bundled fallback across restarts',async()=>{
+ const f=await fixture();
+ for(const marker of [{status:'inactive'},{manualDeleted:true},{confirmed:false}]){
+  f.responses.set(endpoint('old'),{ok:true,schema:1,revision:13,entries:[...entries('old',12),{code:'K1',...marker}]});
+  assert.equal((await f.send('sync')).ok,true);
+  for(const api of [f.api,await f.reloadCatalogue()]){
+   assert.equal(api.match(api.entries,'К1','624','mnc'),null);
+   assert.equal(api.match(api.entries,'К2','624','mnc')?.partnerId,'624');
+  }
+ }
+ f.responses.set(endpoint('old'),{ok:true,schema:1,revision:13,entries:entries('old',12)});
+ assert.equal((await f.send('sync')).ok,true);
+ const restored=await f.reloadCatalogue();
+ assert.equal(restored.match(restored.entries,'К1','624','mnc')?.partnerId,'624');
 });
