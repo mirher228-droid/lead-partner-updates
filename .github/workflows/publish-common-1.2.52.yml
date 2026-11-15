@@ -35,7 +35,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           ./tools/Publish-Release.ps1 -ArchivePath './tested/Lead-Partner-Common-1.2.52.zip' -Version '1.2.52' -ReleaseTag 'common-v1.2.52' -OutputDirectory './dist'
           . ./tools/Release.Common.ps1
-          Test-CommonArchive -ArchivePath './tested/Lead-Partner-Common-1.2.52.zip' -Version '1.2.52' -ExpectedSha256 '1dd33c05ee4619a4cf3548bcf293e7acc0f6b362dd1894eea88686581b62f2e0'
+          Test-CommonArchive -ArchivePath './tested/Lead-Partner-Common-1.2.52.zip' -Version '1.2.52' -ExpectedSha256 'c7547ae60bd97b974460cf5d7240a4572c21caeeb69f93367f95f9ab4c655765'
       - name: Publish verified stable package
         shell: pwsh
         run: |
